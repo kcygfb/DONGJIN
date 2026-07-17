@@ -1,5 +1,6 @@
 ### IntelliJ IDEA ###
 out/
+target/
 !**/src/main/**/out/
 !**/src/test/**/out/
 .kotlin
@@ -28,3 +29,7 @@ bin/
 
 ### Mac OS ###
 .DS_Store
+
+### Env ###
+.env
+*.local

@@ -1,0 +1,16 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: dongjin
+  neo4j:
+    uri: ${NEO4J_URI:neo4j://localhost:7687}
+    authentication:
+      username: ${NEO4J_USERNAME:neo4j}
+      # Set NEO4J_PASSWORD in the IDEA run configuration. Do not commit a real password here.
+      password: ${NEO4J_PASSWORD:neo4j}
+
+app:
+  neo4j:
+    database: ${NEO4J_DATABASE:neo4j}
