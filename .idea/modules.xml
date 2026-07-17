@@ -2,7 +2,8 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/DONGJIN.iml" filepath="$PROJECT_DIR$/DONGJIN.iml" />
+      <module fileurl="file://$PROJECT_DIR$/dongjin.iml" filepath="$PROJECT_DIR$/dongjin.iml" />
+      <module fileurl="file://$PROJECT_DIR$/python-training-service/python-training-service.iml" filepath="$PROJECT_DIR$/python-training-service/python-training-service.iml" />
     </modules>
   </component>
 </project>
