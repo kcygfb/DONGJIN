@@ -11,6 +11,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import com.dongjin.topology.GnnTopology;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -29,24 +30,36 @@ public class PythonTrainingGateway {
         this.baseUrl = baseUrl.replaceAll("/+$", "");
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
+                // Uvicorn only serves HTTP/1.1. Prevent the JDK client from attempting an
+                // h2c upgrade, which can make Python receive a POST with an empty body.
+                .version(HttpClient.Version.HTTP_1_1)
                 .build();
     }
 
-    public JsonNode train(String datasetName, List<FaultSample> samples) {
+    public JsonNode train(String datasetName, List<FaultSample> samples, GnnTopology topology) {
         return post("/train", Map.of(
                 "datasetName", datasetName,
-                "samples", samples
+                "samples", samples,
+                "topology", topology
         ), Duration.ofMinutes(15));
     }
 
-    public JsonNode predict(JsonNode request) {
-        return post("/predict", request, Duration.ofSeconds(30));
+    public JsonNode predictBatch(Object request) {
+        return post("/predict/batch", request, Duration.ofMinutes(2));
     }
 
     public JsonNode activeModel() {
         HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/models/active"))
                 .timeout(Duration.ofSeconds(10))
                 .GET()
+                .build();
+        return send(request);
+    }
+
+    public JsonNode reset() {
+        HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/reset"))
+                .timeout(Duration.ofSeconds(30))
+                .DELETE()
                 .build();
         return send(request);
     }

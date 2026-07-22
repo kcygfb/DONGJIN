@@ -16,3 +16,33 @@ export async function fetchTopology() {
     edges: Array.isArray(data.edges) ? data.edges : [],
   }
 }
+
+export async function generateStandardTopology() {
+  const response = await fetch('/api/topology/generate', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      regions: 3,
+      substationsPerRegion: 3,
+      feedersPerSubstation: 4,
+      loadsPerFeeder: 3,
+      seed: 20260717,
+      replaceGenerated: true,
+    }),
+  })
+
+  if (!response.ok) {
+    let message = `电网生成接口请求失败：${response.status}`
+    try {
+      const body = await response.json()
+      message = body.message || message
+    } catch {
+      // 保留默认错误信息。
+    }
+    throw new Error(message)
+  }
+
+  return response.json()
+}

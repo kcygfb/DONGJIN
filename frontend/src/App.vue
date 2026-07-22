@@ -1,7 +1,10 @@
 <script setup>
+import { ref } from 'vue'
 import DiagnosisSection from './components/DiagnosisSection.vue'
 import TopologySection from './components/TopologySection.vue'
 import TrainingSection from './components/TrainingSection.vue'
+
+const diagnosisResult = ref(null)
 </script>
 
 <template>
@@ -12,9 +15,12 @@ import TrainingSection from './components/TrainingSection.vue'
     </header>
 
     <section class="dashboard-grid" aria-label="页面功能区块">
-      <TopologySection />
+      <TopologySection
+        :diagnosis="diagnosisResult"
+        @topology-changed="diagnosisResult = null"
+      />
       <TrainingSection />
-      <DiagnosisSection />
+      <DiagnosisSection @diagnosed="diagnosisResult = $event" />
     </section>
   </main>
 </template>

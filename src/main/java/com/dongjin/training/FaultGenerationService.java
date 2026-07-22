@@ -1,7 +1,7 @@
 package com.dongjin.training;
 
-import com.dongjin.TopologyData;
-import com.dongjin.TopologyRepository;
+import com.dongjin.topology.TopologyData;
+import com.dongjin.topology.TopologyRepository;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.EnumMap;
@@ -18,7 +18,8 @@ import org.springframework.stereotype.Service;
 @Service
 public class FaultGenerationService {
 
-    private static final int DEFAULT_COUNT = 120;
+    private static final String NORMAL_LABEL = "NORMAL";
+    private static final int DEFAULT_COUNT = 500;
     private static final int MAX_COUNT = 5_000;
     private static final List<FaultType> DEFAULT_TYPES = List.of(
             FaultType.DEVICE_OFFLINE,
@@ -63,13 +64,24 @@ public class FaultGenerationService {
         Map<String, List<String>> neighbours = calculateNeighbours(nodes, edges);
         List<FaultSample> samples = new ArrayList<>(count);
 
+        int faultIndex = 0;
         for (int index = 0; index < count; index++) {
-            FaultType type = availableTypes.get(index % availableTypes.size());
             long sampleSeed = seed + index;
-            double severity = round(0.35 + random.nextDouble() * 0.65);
-            samples.add(type.edgeTarget()
-                    ? createEdgeSample(batchId, index, sampleSeed, generatedAt, type, severity, edges, random)
-                    : createNodeSample(batchId, index, sampleSeed, generatedAt, type, severity, nodes, degrees, neighbours, random));
+            if (index % 5 == 0) {
+                boolean edgeTarget = !edges.isEmpty() && (index / 5) % 2 == 1;
+                samples.add(edgeTarget
+                        ? createNormalEdgeSample(batchId, index, sampleSeed, generatedAt, edges, random)
+                        : createNormalNodeSample(batchId, index, sampleSeed, generatedAt, nodes, degrees, random));
+            } else {
+                FaultType type = availableTypes.get(faultIndex++ % availableTypes.size());
+                double severity = round(0.35 + random.nextDouble() * 0.65);
+                samples.add(type.edgeTarget()
+                        ? createEdgeSample(batchId, index, sampleSeed, generatedAt, type, severity, edges, random)
+                        : createNodeSample(
+                                batchId, index, sampleSeed, generatedAt, type, severity,
+                                nodes, degrees, neighbours, random
+                        ));
+            }
         }
 
         sampleStore.addAll(samples);
@@ -94,18 +106,19 @@ public class FaultGenerationService {
             Random random
     ) {
         TopologyData.Node target = nodes.get(random.nextInt(nodes.size()));
-        Map<String, Double> features = switch (type) {
+        Map<String, Double> measuredFeatures = switch (type) {
             case DEVICE_OFFLINE -> deviceOfflineFeatures(severity, degrees.getOrDefault(target.id(), 0), random);
             case VOLTAGE_ANOMALY -> voltageAnomalyFeatures(severity, degrees.getOrDefault(target.id(), 0), random);
             default -> throw new IllegalArgumentException("故障类型不是设备故障：" + type);
         };
+        Map<String, Double> features = withTargetKind(measuredFeatures, false);
 
         var affected = new LinkedHashSet<String>();
         affected.add(target.id());
         affected.addAll(neighbours.getOrDefault(target.id(), List.of()));
         return new FaultSample(
                 sampleId(sampleSeed, index), batchId, type.name(), type.displayName(), target.id(), target.name(),
-                target.type(), severity, generatedAt, sampleSeed, features, List.copyOf(affected)
+                "NODE", severity, generatedAt, sampleSeed, features, List.copyOf(affected)
         );
     }
 
@@ -120,15 +133,65 @@ public class FaultGenerationService {
             Random random
     ) {
         TopologyData.Edge target = edges.get(random.nextInt(edges.size()));
-        Map<String, Double> features = switch (type) {
+        Map<String, Double> measuredFeatures = switch (type) {
             case LINE_OVERLOAD -> lineOverloadFeatures(severity, random);
             case LINE_DISCONNECTED -> lineDisconnectedFeatures(severity, random);
             default -> throw new IllegalArgumentException("故障类型不是线路故障：" + type);
         };
+        Map<String, Double> features = withTargetKind(measuredFeatures, true);
 
         return new FaultSample(
                 sampleId(sampleSeed, index), batchId, type.name(), type.displayName(), target.id(), target.name(),
-                "line", severity, generatedAt, sampleSeed, features, List.of(target.source(), target.target())
+                "EDGE", severity, generatedAt, sampleSeed, features, List.of(target.source(), target.target())
+        );
+    }
+
+    private FaultSample createNormalNodeSample(
+            String batchId,
+            int index,
+            long sampleSeed,
+            Instant generatedAt,
+            List<TopologyData.Node> nodes,
+            Map<String, Integer> degrees,
+            Random random
+    ) {
+        TopologyData.Node target = nodes.get(random.nextInt(nodes.size()));
+        Map<String, Double> features = withTargetKind(
+                normalFeatures(degrees.getOrDefault(target.id(), 0), random),
+                false
+        );
+        return new FaultSample(
+                sampleId(sampleSeed, index), batchId, NORMAL_LABEL, "正常运行", target.id(), target.name(),
+                "NODE", 0, generatedAt, sampleSeed, features, List.of(target.id())
+        );
+    }
+
+    private FaultSample createNormalEdgeSample(
+            String batchId,
+            int index,
+            long sampleSeed,
+            Instant generatedAt,
+            List<TopologyData.Edge> edges,
+            Random random
+    ) {
+        TopologyData.Edge target = edges.get(random.nextInt(edges.size()));
+        Map<String, Double> features = withTargetKind(normalFeatures(2, random), true);
+        return new FaultSample(
+                sampleId(sampleSeed, index), batchId, NORMAL_LABEL, "正常运行", target.id(), target.name(),
+                "EDGE", 0, generatedAt, sampleSeed, features, List.of(target.source(), target.target())
+        );
+    }
+
+    private Map<String, Double> normalFeatures(int degree, Random random) {
+        return features(
+                1.0 + jitter(random, 0.025),
+                0.55 + jitter(random, 0.2),
+                0.48 + jitter(random, 0.18),
+                0.14 + jitter(random, 0.08),
+                39 + jitter(random, 8),
+                0.98 + jitter(random, 0.02),
+                random.nextDouble() < 0.85 ? 0 : 1,
+                degree
         );
     }
 
@@ -205,6 +268,12 @@ public class FaultGenerationService {
         features.put("connectivityRatio", round(clamp(connectivityRatio, 0, 1)));
         features.put("alarmCount", Math.max(0, alarmCount));
         features.put("topologyDegree", Math.max(0, topologyDegree));
+        return Map.copyOf(features);
+    }
+
+    private Map<String, Double> withTargetKind(Map<String, Double> measuredFeatures, boolean edgeTarget) {
+        Map<String, Double> features = new LinkedHashMap<>(measuredFeatures);
+        features.put("targetIsEdge", edgeTarget ? 1.0 : 0.0);
         return Map.copyOf(features);
     }
 

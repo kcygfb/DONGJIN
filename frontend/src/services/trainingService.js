@@ -8,7 +8,7 @@ async function request(path, options = {}) {
   })
 
   if (!response.ok) {
-    let message = `训练接口请求失败：${response.status}`
+    let message = `服务接口请求失败：${response.status}`
     try {
       const body = await response.json()
       message = body.message || body.detail || message
@@ -44,4 +44,21 @@ export function startTraining(payload) {
 
 export function fetchTrainingJob(jobId) {
   return request(`/api/training/jobs/${encodeURIComponent(jobId)}`)
+}
+
+export function fetchActiveModel() {
+  return request('/api/training/models/active')
+}
+
+export function locateFault(payload) {
+  return request('/api/diagnosis/locate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function resetTraining() {
+  return request('/api/training/reset', {
+    method: 'POST',
+  })
 }

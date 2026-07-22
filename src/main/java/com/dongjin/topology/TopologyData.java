@@ -1,4 +1,4 @@
-package com.dongjin;
+package com.dongjin.topology;
 
 import java.util.List;
 

@@ -1,6 +1,7 @@
 package com.dongjin.training;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import java.time.Instant;
 import java.util.List;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -56,13 +57,19 @@ public class TrainingController {
         return trainingJobService.find(id);
     }
 
-    @PostMapping("/predict")
-    public JsonNode predict(@RequestBody JsonNode request) {
-        return trainingGateway.predict(request);
-    }
-
     @GetMapping("/models/active")
     public JsonNode activeModel() {
         return trainingGateway.activeModel();
+    }
+
+    @PostMapping("/reset")
+    public TrainingResetResult resetTraining() {
+        if (trainingJobService.hasActiveJobs()) {
+            throw new IllegalStateException("训练任务正在运行，完成后才能重置训练");
+        }
+        JsonNode pythonResult = trainingGateway.reset();
+        sampleStore.clear();
+        trainingJobService.clearFinishedJobs();
+        return new TrainingResetResult("RESET", Instant.now(), pythonResult);
     }
 }

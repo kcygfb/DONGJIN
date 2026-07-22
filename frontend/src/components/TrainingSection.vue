@@ -1,9 +1,11 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
+  fetchActiveModel,
   fetchFaults,
   fetchTrainingJob,
   generateFaults,
+  resetTraining,
   startTraining,
 } from '../services/trainingService'
 
@@ -14,33 +16,53 @@ const faultOptions = [
   { value: 'LINE_DISCONNECTED', label: '线路断开' },
 ]
 
-const count = ref(120)
+const count = ref(500)
 const seed = ref(Date.now())
 const selectedTypes = ref(faultOptions.map((option) => option.value))
 const samples = ref([])
 const distribution = ref({})
 const isGenerating = ref(false)
 const isStartingTraining = ref(false)
+const isResetting = ref(false)
 const message = ref('')
 const errorMessage = ref('')
 const trainingJob = ref(null)
+const activeModel = ref(null)
 let pollTimer = null
 
 const canTrain = computed(() => {
   const typeCount = new Set(samples.value.map((sample) => sample.faultType)).size
-  return samples.value.length >= 8 && typeCount >= 2 && !isStartingTraining.value && !isTraining.value
+  return samples.value.length >= 8
+    && typeCount >= 2
+    && !isStartingTraining.value
+    && !isTraining.value
+    && !isResetting.value
 })
 
 const isTraining = computed(() => ['QUEUED', 'RUNNING'].includes(trainingJob.value?.status))
-const metrics = computed(() => trainingJob.value?.result?.metrics)
+const trainingResult = computed(() => trainingJob.value?.result || activeModel.value)
+const trainingSummary = computed(() => ({
+  trainingCount: trainingResult.value?.trainingSampleCount,
+  testCount: trainingResult.value?.evaluationSampleCount,
+  accuracy: trainingResult.value?.metrics?.accuracy,
+  locationAccuracy: trainingResult.value?.metrics?.locationAccuracy,
+  primaryModelName: trainingResult.value?.primaryModelName,
+}))
 
 onMounted(async () => {
-  try {
-    const existing = await fetchFaults()
+  const [faultsResult, modelResult] = await Promise.allSettled([
+    fetchFaults(),
+    fetchActiveModel(),
+  ])
+
+  if (faultsResult.status === 'fulfilled') {
+    const existing = faultsResult.value
     samples.value = Array.isArray(existing) ? existing : []
     distribution.value = summarize(samples.value)
-  } catch {
-    // 后端尚未启动时不阻塞页面首次展示。
+  }
+
+  if (modelResult.status === 'fulfilled') {
+    activeModel.value = modelResult.value
   }
 })
 
@@ -93,6 +115,32 @@ async function handleTrain() {
   }
 }
 
+async function handleReset() {
+  const confirmed = window.confirm('重置后将删除当前模型、历史模型文件、故障样本和训练记录，是否继续？')
+  if (!confirmed) {
+    return
+  }
+
+  isResetting.value = true
+  errorMessage.value = ''
+  message.value = ''
+  stopPolling()
+  try {
+    const result = await resetTraining()
+    samples.value = []
+    distribution.value = {}
+    trainingJob.value = null
+    activeModel.value = null
+    seed.value = Date.now()
+    const deletedCount = result?.pythonService?.deletedModelCount || 0
+    message.value = `训练环境已重置，已删除 ${deletedCount} 个模型。现在可以重新生成样本并训练。`
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '训练重置失败'
+  } finally {
+    isResetting.value = false
+  }
+}
+
 function schedulePoll() {
   stopPolling()
   pollTimer = window.setTimeout(pollTrainingJob, 900)
@@ -105,8 +153,12 @@ async function pollTrainingJob() {
   try {
     trainingJob.value = await fetchTrainingJob(trainingJob.value.id)
     if (isTraining.value) {
+      if (trainingJob.value.progress >= 35) {
+        message.value = 'Python 正在执行 GNN 图训练，标准电网通常约需 1 分钟；完成后进度会直接跳到 100%。'
+      }
       schedulePoll()
     } else if (trainingJob.value.status === 'SUCCEEDED') {
+      activeModel.value = trainingJob.value.result
       message.value = `训练完成，模型 ${trainingJob.value.result.modelVersion} 已自动激活。`
     } else if (trainingJob.value.status === 'FAILED') {
       errorMessage.value = trainingJob.value.error || '训练失败'
@@ -132,6 +184,9 @@ function summarize(values) {
 }
 
 function faultLabel(type) {
+  if (type === 'NORMAL') {
+    return '正常运行'
+  }
   return faultOptions.find((option) => option.value === type)?.label || type
 }
 
@@ -140,7 +195,7 @@ function shortId(value) {
 }
 
 function percent(value) {
-  return `${((value || 0) * 100).toFixed(1)}%`
+  return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '--'
 }
 </script>
 
@@ -174,7 +229,12 @@ function percent(value) {
         </label>
       </fieldset>
 
-      <button class="secondary-action" type="button" :disabled="isGenerating || isTraining" @click="handleGenerate">
+      <button
+        class="secondary-action"
+        type="button"
+        :disabled="isGenerating || isTraining || isStartingTraining || isResetting"
+        @click="handleGenerate"
+      >
         {{ isGenerating ? '正在生成…' : '生成故障样本' }}
       </button>
     </div>
@@ -202,20 +262,54 @@ function percent(value) {
       <div class="training-progress-track" aria-label="训练进度">
         <span :style="{ width: `${trainingJob.progress || 0}%` }"></span>
       </div>
-      <small>{{ trainingJob.progress || 0 }}% · {{ trainingJob.sampleCount }} 条样本</small>
+      <small v-if="trainingJob.progress >= 35 && trainingJob.progress < 100">
+        Python GNN 训练中 · {{ trainingJob.sampleCount }} 张完整拓扑图 · 完成后跳至 100%
+      </small>
+      <small v-else>{{ trainingJob.progress || 0 }}% · {{ trainingJob.sampleCount }} 张完整拓扑图</small>
     </div>
 
-    <div v-if="metrics" class="metric-grid">
-      <div><span>准确率</span><strong>{{ percent(metrics.accuracy) }}</strong></div>
-      <div><span>宏平均 F1</span><strong>{{ percent(metrics.macroF1) }}</strong></div>
-      <div><span>召回率</span><strong>{{ percent(metrics.macroRecall) }}</strong></div>
+    <div class="training-result-summary" aria-label="最近一次训练结果">
+      <p>训练结果 · 主模型 {{ trainingSummary.primaryModelName || 'GNN' }}</p>
+      <div class="metric-grid">
+        <div>
+          <span>训练量</span>
+          <strong>{{ trainingSummary.trainingCount ?? '--' }}</strong>
+          <small>条样本</small>
+        </div>
+        <div>
+          <span>测试集</span>
+          <strong>{{ trainingSummary.testCount ?? '--' }}</strong>
+          <small>条样本</small>
+        </div>
+        <div>
+          <span>GNN最终准确率</span>
+          <strong>{{ percent(trainingSummary.accuracy) }}</strong>
+          <small>位置与类型同时正确</small>
+        </div>
+      </div>
+      <div class="model-metric-detail">
+        <div>
+          <span>GNN定位准确率</span>
+          <strong>{{ percent(trainingSummary.locationAccuracy) }}</strong>
+        </div>
+      </div>
     </div>
 
     <p v-if="message" class="training-message" aria-live="polite">{{ message }}</p>
     <p v-if="errorMessage" class="training-message training-message--error" role="alert">{{ errorMessage }}</p>
 
-    <button class="primary-action training-start" type="button" :disabled="!canTrain" @click="handleTrain">
-      {{ isStartingTraining || isTraining ? '训练进行中…' : '开始训练' }}
-    </button>
+    <div class="training-action-row">
+      <button class="primary-action training-start" type="button" :disabled="!canTrain" @click="handleTrain">
+        {{ isStartingTraining || isTraining ? '训练进行中…' : '开始训练' }}
+      </button>
+      <button
+        class="secondary-action training-reset"
+        type="button"
+        :disabled="isTraining || isGenerating || isStartingTraining || isResetting"
+        @click="handleReset"
+      >
+        {{ isResetting ? '正在重置…' : '重置训练' }}
+      </button>
+    </div>
   </section>
 </template>

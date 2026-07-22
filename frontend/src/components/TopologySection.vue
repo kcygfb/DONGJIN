@@ -1,16 +1,40 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { fetchTopology } from '../services/topologyService'
+import { fetchTopology, generateStandardTopology } from '../services/topologyService'
 
-const canvasWidth = 960
-const canvasHeight = 560
+const props = defineProps({
+  diagnosis: {
+    type: Object,
+    default: null,
+  },
+})
+
+const emit = defineEmits(['topologyChanged'])
+
+const minimumCanvasWidth = 960
+const minimumCanvasHeight = 560
 const topology = ref({ nodes: [], edges: [] })
 const isLoading = ref(false)
+const isGenerating = ref(false)
 const errorMessage = ref('')
+const generationMessage = ref('')
 
-const positionedNodes = computed(() =>
-  layoutNodes(topology.value.nodes, topology.value.edges),
-)
+const layout = computed(() => layoutNodes(topology.value.nodes, topology.value.edges))
+const positionedNodes = computed(() => layout.value.nodes)
+const canvasWidth = computed(() => layout.value.width)
+const canvasHeight = computed(() => layout.value.height)
+const upstreamNodeIds = computed(() => new Set(
+  props.diagnosis?.trace?.upstream?.map((step) => step.nodeId) || [],
+))
+const downstreamNodeIds = computed(() => new Set(
+  props.diagnosis?.trace?.downstream?.map((step) => step.nodeId) || [],
+))
+const upstreamEdgeIds = computed(() => new Set(
+  props.diagnosis?.trace?.upstream?.map((step) => step.viaEdgeId).filter(Boolean) || [],
+))
+const downstreamEdgeIds = computed(() => new Set(
+  props.diagnosis?.trace?.downstream?.map((step) => step.viaEdgeId).filter(Boolean) || [],
+))
 
 const positionedNodeMap = computed(() => {
   return new Map(positionedNodes.value.map((node) => [node.id, node]))
@@ -30,6 +54,13 @@ const summaryText = computed(() => {
   return `${topology.value.nodes.length} 个设备 / ${topology.value.edges.length} 条连接`
 })
 
+const traceSummary = computed(() => {
+  if (!props.diagnosis?.trace) {
+    return ''
+  }
+  return `正在高亮 ${props.diagnosis.trace.nodeIds.length} 个溯源设备 / ${props.diagnosis.trace.edgeIds.length} 条路径连接`
+})
+
 onMounted(() => {
   loadTopology()
 })
@@ -40,6 +71,7 @@ async function loadTopology() {
 
   try {
     topology.value = await fetchTopology()
+    emit('topologyChanged')
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '拓扑加载失败'
   } finally {
@@ -47,9 +79,31 @@ async function loadTopology() {
   }
 }
 
+async function handleGenerateTopology() {
+  const confirmed = window.confirm(
+    '将生成约 193 个设备和 200 多条连接，并替换上一次由程序生成的电网；手工创建的节点不会删除。是否继续？',
+  )
+  if (!confirmed) {
+    return
+  }
+
+  isGenerating.value = true
+  errorMessage.value = ''
+  generationMessage.value = ''
+  try {
+    const result = await generateStandardTopology()
+    generationMessage.value = `已生成 ${result.nodeCount} 个设备、${result.edgeCount} 条连接`
+    await loadTopology()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '标准电网生成失败'
+  } finally {
+    isGenerating.value = false
+  }
+}
+
 function layoutNodes(nodes, edges) {
   if (!nodes.length) {
-    return []
+    return { nodes: [], width: minimumCanvasWidth, height: minimumCanvasHeight }
   }
 
   const nodeIds = new Set(nodes.map((node) => node.id))
@@ -77,16 +131,17 @@ function layoutNodes(nodes, edges) {
     const nextLevel = levelById.get(currentId) + 1
 
     outgoing.get(currentId).forEach((targetId) => {
-      if (!levelById.has(targetId) || nextLevel > levelById.get(targetId)) {
+      if (!levelById.has(targetId)) {
         levelById.set(targetId, nextLevel)
         queue.push(targetId)
       }
     })
   }
 
+  const disconnectedLevel = Math.max(...levelById.values()) + 1
   nodes.forEach((node) => {
     if (!levelById.has(node.id)) {
-      levelById.set(node.id, Math.max(...levelById.values()) + 1)
+      levelById.set(node.id, disconnectedLevel)
     }
   })
 
@@ -98,36 +153,71 @@ function layoutNodes(nodes, edges) {
     levels.set(level, group)
   })
 
-  const maxLevel = Math.max(...levels.keys())
-  const horizontalGap = maxLevel === 0 ? 0 : (canvasWidth - 180) / maxLevel
+  const maxRowsPerColumn = 12
+  const horizontalGap = 150
+  const verticalGap = 82
+  const positionById = new Map()
+  let nextX = 90
+  let maximumRows = 1
 
-  return nodes.map((node) => {
-    const level = levelById.get(node.id)
+  Array.from(levels.keys()).sort((left, right) => left - right).forEach((level) => {
     const group = levels.get(level)
-    const index = group.findIndex((item) => item.id === node.id)
-    const verticalGap = group.length <= 1 ? 0 : (canvasHeight - 160) / (group.length - 1)
-
-    return {
-      ...node,
-      x: 90 + level * horizontalGap,
-      y: group.length <= 1 ? canvasHeight / 2 : 80 + index * verticalGap,
-    }
+    const columnCount = Math.max(1, Math.ceil(group.length / maxRowsPerColumn))
+    maximumRows = Math.max(maximumRows, Math.min(group.length, maxRowsPerColumn))
+    group.forEach((node, index) => {
+      const column = Math.floor(index / maxRowsPerColumn)
+      const row = index % maxRowsPerColumn
+      positionById.set(node.id, {
+        x: nextX + column * horizontalGap,
+        y: 80 + row * verticalGap,
+      })
+    })
+    nextX += columnCount * horizontalGap
   })
+
+  return {
+    width: Math.max(minimumCanvasWidth, nextX + 30),
+    height: Math.max(minimumCanvasHeight, 160 + (maximumRows - 1) * verticalGap),
+    nodes: nodes.map((node) => ({
+      ...node,
+      ...positionById.get(node.id),
+    })),
+  }
 }
 
 function nodeClass(node) {
-  return [
+  const classes = [
     'topology-node',
     `topology-node--${normalizeToken(node.type)}`,
     `topology-node--${normalizeToken(node.status)}`,
   ]
+  if (props.diagnosis?.target?.kind === 'NODE' && props.diagnosis.target.id === node.id) {
+    classes.push('topology-node--trace-target')
+  }
+  if (upstreamNodeIds.value.has(node.id)) {
+    classes.push('topology-node--trace-upstream')
+  }
+  if (downstreamNodeIds.value.has(node.id)) {
+    classes.push('topology-node--trace-downstream')
+  }
+  return classes
 }
 
 function edgeClass(edge) {
-  return [
+  const classes = [
     'topology-edge',
     `topology-edge--${normalizeToken(edge.status)}`,
   ]
+  if (props.diagnosis?.target?.kind === 'EDGE' && props.diagnosis.target.id === edge.id) {
+    classes.push('topology-edge--trace-target')
+  }
+  if (upstreamEdgeIds.value.has(edge.id)) {
+    classes.push('topology-edge--trace-upstream')
+  }
+  if (downstreamEdgeIds.value.has(edge.id)) {
+    classes.push('topology-edge--trace-downstream')
+  }
+  return classes
 }
 
 function normalizeToken(value) {
@@ -143,10 +233,29 @@ function normalizeToken(value) {
     </div>
 
     <div class="topology-toolbar">
-      <span>{{ summaryText }}</span>
-      <button class="secondary-action topology-refresh" type="button" @click="loadTopology">
-        刷新拓扑
-      </button>
+      <div>
+        <span>{{ summaryText }}</span>
+        <small v-if="generationMessage" class="topology-generation-message">{{ generationMessage }}</small>
+        <small v-if="traceSummary" class="topology-trace-message">{{ traceSummary }}</small>
+      </div>
+      <div class="topology-toolbar-actions">
+        <button
+          class="secondary-action topology-refresh"
+          type="button"
+          :disabled="isLoading || isGenerating"
+          @click="handleGenerateTopology"
+        >
+          {{ isGenerating ? '正在生成…' : '生成标准电网' }}
+        </button>
+        <button
+          class="secondary-action topology-refresh"
+          type="button"
+          :disabled="isLoading || isGenerating"
+          @click="loadTopology"
+        >
+          刷新拓扑
+        </button>
+      </div>
     </div>
 
     <div class="topology-canvas" aria-label="电网拓扑图">
@@ -165,6 +274,7 @@ function normalizeToken(value) {
         v-else
         class="topology-svg"
         :viewBox="`0 0 ${canvasWidth} ${canvasHeight}`"
+        :style="{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }"
         role="img"
         aria-label="电网设备连接拓扑"
       >
@@ -180,6 +290,28 @@ function normalizeToken(value) {
           >
             <path d="M0,0 L0,6 L9,3 z" class="topology-arrow" />
           </marker>
+          <marker
+            id="topology-arrow-upstream"
+            markerWidth="10"
+            markerHeight="10"
+            refX="9"
+            refY="3"
+            orient="auto"
+            markerUnits="strokeWidth"
+          >
+            <path d="M0,0 L0,6 L9,3 z" class="topology-arrow topology-arrow--upstream" />
+          </marker>
+          <marker
+            id="topology-arrow-downstream"
+            markerWidth="10"
+            markerHeight="10"
+            refX="9"
+            refY="3"
+            orient="auto"
+            markerUnits="strokeWidth"
+          >
+            <path d="M0,0 L0,6 L9,3 z" class="topology-arrow topology-arrow--downstream" />
+          </marker>
         </defs>
 
         <g class="topology-edges">
@@ -191,7 +323,11 @@ function normalizeToken(value) {
             :y1="edge.sourceNode.y"
             :x2="edge.targetNode.x"
             :y2="edge.targetNode.y"
-            marker-end="url(#topology-arrow)"
+            :marker-end="upstreamEdgeIds.has(edge.id)
+              ? 'url(#topology-arrow-upstream)'
+              : downstreamEdgeIds.has(edge.id)
+                ? 'url(#topology-arrow-downstream)'
+                : 'url(#topology-arrow)'"
           />
         </g>
 
