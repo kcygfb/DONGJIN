@@ -5,7 +5,7 @@ import com.dongjin.diagnosis.BlindDiagnosisResult.LocationCandidate;
 import com.dongjin.topology.TopologyData;
 import com.dongjin.topology.GnnTopology;
 import com.dongjin.topology.TopologyRepository;
-import com.dongjin.training.PythonTrainingGateway;
+import com.dongjin.training.PythonComputeGateway;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.ArrayList;
@@ -33,12 +33,12 @@ public class DiagnosisService {
             "topologyDegree"
     );
 
-    private final PythonTrainingGateway trainingGateway;
+    private final PythonComputeGateway trainingGateway;
     private final TopologyTraceService traceService;
     private final TopologyRepository topologyRepository;
 
     public DiagnosisService(
-            PythonTrainingGateway trainingGateway,
+            PythonComputeGateway trainingGateway,
             TopologyTraceService traceService,
             TopologyRepository topologyRepository
     ) {

@@ -24,41 +24,9 @@ async function request(path, options = {}) {
   return response.json()
 }
 
-export function generateFaults(payload) {
-  return request('/api/training/errors/generate', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
-}
-
-export function fetchFaults() {
-  return request('/api/training/errors')
-}
-
-export function startTraining(payload) {
-  return request('/api/training/jobs', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
-}
-
-export function fetchTrainingJob(jobId) {
-  return request(`/api/training/jobs/${encodeURIComponent(jobId)}`)
-}
-
-export function fetchActiveModel() {
-  return request('/api/training/models/active')
-}
-
 export function locateFault(payload) {
   return request('/api/diagnosis/locate', {
     method: 'POST',
     body: JSON.stringify(payload),
-  })
-}
-
-export function resetTraining() {
-  return request('/api/training/reset', {
-    method: 'POST',
   })
 }

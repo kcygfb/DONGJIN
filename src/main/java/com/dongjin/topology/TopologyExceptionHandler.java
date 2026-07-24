@@ -1,5 +1,6 @@
 package com.dongjin.topology;
 
+import com.dongjin.training.TrainingGatewayException;
 import java.time.Instant;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
@@ -7,7 +8,10 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-@RestControllerAdvice(assignableTypes = TopologyController.class)
+@RestControllerAdvice(assignableTypes = {
+        TopologyController.class,
+        GridRuntimeController.class
+})
 public class TopologyExceptionHandler {
 
     @ExceptionHandler(IllegalArgumentException.class)
@@ -15,6 +19,15 @@ public class TopologyExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
                 "timestamp", Instant.now().toString(),
                 "status", HttpStatus.BAD_REQUEST.value(),
+                "message", exception.getMessage()
+        ));
+    }
+
+    @ExceptionHandler(TrainingGatewayException.class)
+    public ResponseEntity<Map<String, Object>> badGateway(TrainingGatewayException exception) {
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(Map.of(
+                "timestamp", Instant.now().toString(),
+                "status", HttpStatus.BAD_GATEWAY.value(),
                 "message", exception.getMessage()
         ));
     }

@@ -14,3 +14,5 @@ spring:
 app:
   neo4j:
     database: ${NEO4J_DATABASE:neo4j}
+  python-service:
+    base-url: ${PYTHON_SERVICE_BASE_URL:http://127.0.0.1:8001}

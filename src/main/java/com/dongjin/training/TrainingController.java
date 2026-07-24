@@ -2,11 +2,10 @@ package com.dongjin.training;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import java.time.Instant;
-import java.util.List;
-import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -15,46 +14,66 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/training")
 public class TrainingController {
 
-    private final FaultGenerationService faultGenerationService;
-    private final FaultSampleStore sampleStore;
-    private final TrainingJobService trainingJobService;
-    private final PythonTrainingGateway trainingGateway;
+    private final PythonComputeGateway trainingGateway;
 
-    public TrainingController(
-            FaultGenerationService faultGenerationService,
-            FaultSampleStore sampleStore,
-            TrainingJobService trainingJobService,
-            PythonTrainingGateway trainingGateway
-    ) {
-        this.faultGenerationService = faultGenerationService;
-        this.sampleStore = sampleStore;
-        this.trainingJobService = trainingJobService;
+    public TrainingController(PythonComputeGateway trainingGateway) {
         this.trainingGateway = trainingGateway;
     }
 
-    @PostMapping("/errors/generate")
-    public FaultGenerationResult generateErrors(@RequestBody(required = false) GenerateFaultRequest request) {
-        return faultGenerationService.generate(request);
+    @PostMapping("/offline/scenario-batches")
+    public JsonNode generateOfflineScenarioBatch(@RequestBody JsonNode request) {
+        return trainingGateway.generateOfflineScenarioBatch(request);
     }
 
-    @GetMapping("/errors")
-    public List<FaultSample> getErrors() {
-        return sampleStore.findAll();
+    @GetMapping("/offline/scenario-batches")
+    public JsonNode offlineScenarioBatches() {
+        return trainingGateway.offlineScenarioBatches();
     }
 
-    @DeleteMapping("/errors")
-    public void clearErrors() {
-        sampleStore.clear();
+    @GetMapping("/offline/scenario-batches/{batchId}")
+    public JsonNode offlineScenarioBatch(@PathVariable String batchId) {
+        return trainingGateway.offlineScenarioBatch(batchId);
     }
 
-    @PostMapping("/jobs")
-    public TrainingJobView startTraining(@RequestBody(required = false) StartTrainingRequest request) {
-        return trainingJobService.start(request);
+    @PostMapping("/offline/datasets")
+    public JsonNode buildOfflineDataset(@RequestBody JsonNode request) {
+        return trainingGateway.buildOfflineDataset(request);
     }
 
-    @GetMapping("/jobs/{id}")
-    public TrainingJobView getTrainingJob(@PathVariable String id) {
-        return trainingJobService.find(id);
+    @GetMapping("/offline/datasets")
+    public JsonNode offlineDatasets() {
+        return trainingGateway.offlineDatasets();
+    }
+
+    @GetMapping("/offline/datasets/{datasetId}")
+    public JsonNode offlineDataset(@PathVariable String datasetId) {
+        return trainingGateway.offlineDataset(datasetId);
+    }
+
+    @GetMapping("/offline/datasets/{datasetId}/preview")
+    public JsonNode offlineDatasetPreview(
+            @PathVariable String datasetId,
+            @RequestParam(defaultValue = "100") int limit
+    ) {
+        if (limit < 1 || limit > 1000) {
+            throw new IllegalArgumentException("limit必须在1到1000之间");
+        }
+        return trainingGateway.offlineDatasetPreview(datasetId, limit);
+    }
+
+    @PostMapping("/offline/models")
+    public JsonNode runOfflineTraining(@RequestBody JsonNode request) {
+        return trainingGateway.runOfflineTraining(request);
+    }
+
+    @GetMapping("/offline/models")
+    public JsonNode offlineModels() {
+        return trainingGateway.offlineModels();
+    }
+
+    @GetMapping("/offline/models/{modelId}")
+    public JsonNode offlineModel(@PathVariable String modelId) {
+        return trainingGateway.offlineModel(modelId);
     }
 
     @GetMapping("/models/active")
@@ -64,12 +83,7 @@ public class TrainingController {
 
     @PostMapping("/reset")
     public TrainingResetResult resetTraining() {
-        if (trainingJobService.hasActiveJobs()) {
-            throw new IllegalStateException("训练任务正在运行，完成后才能重置训练");
-        }
         JsonNode pythonResult = trainingGateway.reset();
-        sampleStore.clear();
-        trainingJobService.clearFinishedJobs();
         return new TrainingResetResult("RESET", Instant.now(), pythonResult);
     }
 }

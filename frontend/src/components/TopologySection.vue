@@ -1,6 +1,16 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import { fetchTopology, generateStandardTopology } from '../services/topologyService'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import {
+  fetchCurrentSnapshot,
+  fetchGridSource,
+  fetchSimulationStatus,
+  fetchTopology,
+  generateStandardTopology,
+  pauseSimulation,
+  resumeSimulation,
+  startSimulation,
+  stopSimulation,
+} from '../services/topologyService'
 
 const props = defineProps({
   diagnosis: {
@@ -18,6 +28,13 @@ const isLoading = ref(false)
 const isGenerating = ref(false)
 const errorMessage = ref('')
 const generationMessage = ref('')
+const gridSource = ref(null)
+const simulationStatus = ref({ state: 'STOPPED', step: 0 })
+const currentSnapshot = ref(null)
+const runtimeBusy = ref(false)
+const runtimeError = ref('')
+const profileStrategy = ref('linear')
+let runtimePoller
 
 const layout = computed(() => layoutNodes(topology.value.nodes, topology.value.edges))
 const positionedNodes = computed(() => layout.value.nodes)
@@ -54,6 +71,38 @@ const summaryText = computed(() => {
   return `${topology.value.nodes.length} 个设备 / ${topology.value.edges.length} 条连接`
 })
 
+const sourceSummary = computed(() => {
+  if (!gridSource.value) {
+    return '尚未生成SimBench权威电网包'
+  }
+  const counts = gridSource.value.elementCounts || {}
+  const status = gridSource.value.validation?.status === 'passed' ? '校验通过' : '待校验'
+  return `${gridSource.value.simbenchCode} · ${gridSource.value.topologyVersion} · `
+    + `${counts.bus || 0}母线/${counts.line || 0}线路/${counts.trafo || 0}变压器 · ${status}`
+})
+
+const runtimeSummary = computed(() => {
+  const status = simulationStatus.value
+  const simulationTime = status.simulationTime
+    ? new Date(status.simulationTime).toLocaleString()
+    : '尚未启动'
+  return `${status.state || 'STOPPED'} · 第 ${status.step || 0} 步 · ${simulationTime}`
+})
+
+const snapshotSummary = computed(() => {
+  const snapshot = currentSnapshot.value
+  if (!snapshot) {
+    return 'Redis中尚无有效潮流快照'
+  }
+  const voltages = Object.values(snapshot.buses || {}).map((item) => item.vmPu)
+  const lineLoadings = Object.values(snapshot.lines || {}).map((item) => item.loadingPercent)
+  const minimumVoltage = voltages.length ? Math.min(...voltages).toFixed(4) : '--'
+  const maximumVoltage = voltages.length ? Math.max(...voltages).toFixed(4) : '--'
+  const maximumLoading = lineLoadings.length ? Math.max(...lineLoadings).toFixed(2) : '--'
+  return `${snapshot.snapshotId} · 电压 ${minimumVoltage}–${maximumVoltage} pu · `
+    + `最大线路负载率 ${maximumLoading}%`
+})
+
 const traceSummary = computed(() => {
   if (!props.diagnosis?.trace) {
     return ''
@@ -63,7 +112,24 @@ const traceSummary = computed(() => {
 
 onMounted(() => {
   loadTopology()
+  loadGridSource()
+  refreshRuntime()
+  runtimePoller = window.setInterval(refreshRuntime, 2000)
 })
+
+onBeforeUnmount(() => {
+  if (runtimePoller) {
+    window.clearInterval(runtimePoller)
+  }
+})
+
+async function loadGridSource() {
+  try {
+    gridSource.value = await fetchGridSource()
+  } catch (error) {
+    generationMessage.value = error instanceof Error ? error.message : '标准电网源查询失败'
+  }
+}
 
 async function loadTopology() {
   isLoading.value = true
@@ -81,7 +147,7 @@ async function loadTopology() {
 
 async function handleGenerateTopology() {
   const confirmed = window.confirm(
-    '将生成约 193 个设备和 200 多条连接，并替换上一次由程序生成的电网；手工创建的节点不会删除。是否继续？',
+    '将按服务端配置从SimBench生成或复用权威电网包，并把该版本幂等发布到Neo4j。旧版本会保留但不再作为活动拓扑，是否继续？',
   )
   if (!confirmed) {
     return
@@ -92,13 +158,101 @@ async function handleGenerateTopology() {
   generationMessage.value = ''
   try {
     const result = await generateStandardTopology()
-    generationMessage.value = `已生成 ${result.nodeCount} 个设备、${result.edgeCount} 条连接`
+    gridSource.value = result
+    const counts = result.elementCounts || {}
+    const projection = result.neo4jProjection || {}
+    generationMessage.value = `${result.reused ? '已复用' : '已生成'} ${result.gridId}/${result.topologyVersion}：`
+      + `${counts.bus || 0}母线、${counts.line || 0}线路；Neo4j投影`
+      + `${projection.verified ? '已核对并激活' : '状态未知'}`
     await loadTopology()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '标准电网生成失败'
   } finally {
     isGenerating.value = false
   }
+}
+
+async function refreshRuntime() {
+  try {
+    const [status, snapshot] = await Promise.all([
+      fetchSimulationStatus(),
+      fetchCurrentSnapshot(),
+    ])
+    simulationStatus.value = status
+    currentSnapshot.value = snapshot
+    runtimeError.value = status.lastError || ''
+  } catch (error) {
+    runtimeError.value = error instanceof Error ? error.message : '仿真状态查询失败'
+  }
+}
+
+async function handleRuntimeAction(action) {
+  runtimeBusy.value = true
+  runtimeError.value = ''
+  try {
+    if (action === 'start') {
+      simulationStatus.value = await startSimulation({
+        profileStrategy: profileStrategy.value,
+      })
+    } else if (action === 'pause') {
+      simulationStatus.value = await pauseSimulation()
+    } else if (action === 'resume') {
+      simulationStatus.value = await resumeSimulation()
+    } else if (action === 'stop') {
+      simulationStatus.value = await stopSimulation()
+    }
+    await refreshRuntime()
+  } catch (error) {
+    runtimeError.value = error instanceof Error ? error.message : '仿真操作失败'
+  } finally {
+    runtimeBusy.value = false
+  }
+}
+
+function nodeMeasurement(node) {
+  const snapshot = currentSnapshot.value
+  if (!snapshot) {
+    return ''
+  }
+  if (node.type === 'bus') {
+    const value = snapshot.buses?.[node.id]
+    return value ? `${value.vmPu.toFixed(4)} pu` : ''
+  }
+  if (node.type === 'line') {
+    const value = snapshot.lines?.[node.id]
+    return value ? `${value.loadingPercent.toFixed(1)}%` : ''
+  }
+  if (node.type === 'trafo' || node.type === 'trafo3w') {
+    const value = snapshot.transformers?.[node.id]
+    return value ? `${value.loadingPercent.toFixed(1)}%` : ''
+  }
+  if (node.type === 'load') {
+    const value = snapshot.loads?.[node.id]
+    return value ? `${value.pMw.toFixed(3)} MW` : ''
+  }
+  if (node.type === 'sgen' || node.type === 'gen') {
+    const value = snapshot.generators?.[node.id]
+    return value ? `${value.pMw.toFixed(3)} MW` : ''
+  }
+  return ''
+}
+
+function isRuntimeWarning(node) {
+  const snapshot = currentSnapshot.value
+  if (!snapshot) {
+    return false
+  }
+  if (node.type === 'bus') {
+    const voltage = snapshot.buses?.[node.id]?.vmPu
+    return voltage != null && (voltage < 0.95 || voltage > 1.05)
+  }
+  if (node.type === 'line') {
+    return (snapshot.lines?.[node.id]?.loadingPercent || 0) > 100
+  }
+  if (node.type === 'trafo' || node.type === 'trafo3w') {
+    return (snapshot.transformers?.[node.id]?.loadingPercent || 0) > 100
+  }
+  return false
 }
 
 function layoutNodes(nodes, edges) {
@@ -155,7 +309,7 @@ function layoutNodes(nodes, edges) {
 
   const maxRowsPerColumn = 12
   const horizontalGap = 150
-  const verticalGap = 82
+  const verticalGap = 98
   const positionById = new Map()
   let nextX = 90
   let maximumRows = 1
@@ -200,6 +354,9 @@ function nodeClass(node) {
   if (downstreamNodeIds.value.has(node.id)) {
     classes.push('topology-node--trace-downstream')
   }
+  if (isRuntimeWarning(node)) {
+    classes.push('topology-node--runtime-warning')
+  }
   return classes
 }
 
@@ -235,6 +392,7 @@ function normalizeToken(value) {
     <div class="topology-toolbar">
       <div>
         <span>{{ summaryText }}</span>
+        <small class="topology-source-message">权威数据源：{{ sourceSummary }}</small>
         <small v-if="generationMessage" class="topology-generation-message">{{ generationMessage }}</small>
         <small v-if="traceSummary" class="topology-trace-message">{{ traceSummary }}</small>
       </div>
@@ -245,7 +403,7 @@ function normalizeToken(value) {
           :disabled="isLoading || isGenerating"
           @click="handleGenerateTopology"
         >
-          {{ isGenerating ? '正在生成…' : '生成标准电网' }}
+          {{ isGenerating ? '正在生成并发布…' : '生成并发布SimBench拓扑' }}
         </button>
         <button
           class="secondary-action topology-refresh"
@@ -254,6 +412,60 @@ function normalizeToken(value) {
           @click="loadTopology"
         >
           刷新拓扑
+        </button>
+      </div>
+    </div>
+
+    <div class="simulation-toolbar">
+      <div class="simulation-status">
+        <strong>连续潮流：{{ runtimeSummary }}</strong>
+        <small>{{ snapshotSummary }}</small>
+        <small v-if="runtimeError" class="topology-generation-message">{{ runtimeError }}</small>
+      </div>
+      <div class="simulation-actions">
+        <select
+          v-model="profileStrategy"
+          :disabled="runtimeBusy || ['RUNNING', 'PAUSED'].includes(simulationStatus.state)"
+          aria-label="曲线插值策略"
+        >
+          <option value="linear">线性插值</option>
+          <option value="hold">保持前值</option>
+        </select>
+        <button
+          v-if="!['RUNNING', 'PAUSED'].includes(simulationStatus.state)"
+          class="secondary-action"
+          type="button"
+          :disabled="runtimeBusy"
+          @click="handleRuntimeAction('start')"
+        >
+          启动
+        </button>
+        <button
+          v-if="simulationStatus.state === 'RUNNING'"
+          class="secondary-action"
+          type="button"
+          :disabled="runtimeBusy"
+          @click="handleRuntimeAction('pause')"
+        >
+          暂停
+        </button>
+        <button
+          v-if="simulationStatus.state === 'PAUSED'"
+          class="secondary-action"
+          type="button"
+          :disabled="runtimeBusy"
+          @click="handleRuntimeAction('resume')"
+        >
+          继续
+        </button>
+        <button
+          v-if="['RUNNING', 'PAUSED'].includes(simulationStatus.state)"
+          class="secondary-action"
+          type="button"
+          :disabled="runtimeBusy"
+          @click="handleRuntimeAction('stop')"
+        >
+          停止
         </button>
       </div>
     </div>
@@ -353,6 +565,9 @@ function normalizeToken(value) {
             <circle r="28" />
             <text class="topology-node-name" y="48">{{ node.name }}</text>
             <text class="topology-node-meta" y="66">{{ node.type }} · {{ node.voltageLevel }}</text>
+            <text v-if="nodeMeasurement(node)" class="topology-node-runtime" y="82">
+              {{ nodeMeasurement(node) }}
+            </text>
           </g>
         </g>
       </svg>

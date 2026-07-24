@@ -35,4 +35,9 @@ public class TopologyController {
     ) {
         return generationService.generate(request);
     }
+
+    @GetMapping("/source")
+    public TopologyGenerationResult getActiveSource() {
+        return generationService.activeSource();
+    }
 }

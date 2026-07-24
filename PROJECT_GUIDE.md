@@ -2,13 +2,13 @@
 
 ## 1. 项目目标
 
-该项目是一个电网拓扑、故障样本生成、模型训练和错误研判工作台。目前包含：
+该项目是一个标准电网、动态潮流、离线训练和错误研判工作台。目前包含：
 
 1. Neo4j 电网拓扑读取、生成和展示。
-2. 基于拓扑的可复现故障样本生成。
-3. Java 到 Python 的异步训练任务传递。
-4. GCN 图神经网络训练、评估、保存和激活。
-5. 对全拓扑观测执行 GNN 故障定位、分类和上下游溯源。
+2. pandapower + SimBench 标准电网和连续潮流。
+3. Redis/Memurai 当前动态快照。
+4. 基于P1权威电网包的可见离线场景、数据集和GCN训练。
+5. 后续将合格离线模型接入全拓扑故障定位、分类和上下游溯源。
 
 ## 2. 总体结构
 
@@ -19,12 +19,10 @@ DONGJIN
 │  ├─ topology
 │  │  ├─ TopologyController.java
 │  │  ├─ TopologyRepository.java
-│  │  └─ GridTopologyGenerationService.java
+│  │  ├─ GridTopologyGenerationService.java
+│  │  └─ GridRuntimeController.java
 │  └─ training
-│     ├─ FaultGenerationService.java
-│     ├─ FaultSampleStore.java
-│     ├─ TrainingJobService.java
-│     ├─ PythonTrainingGateway.java
+│     ├─ PythonComputeGateway.java
 │     └─ TrainingController.java
 ├─ frontend
 │  └─ src
@@ -32,7 +30,30 @@ DONGJIN
 │     └─ services
 ├─ python-training-service
 │  ├─ app/main.py
+│  ├─ app/grid
+│  │  ├─ api.py
+│  │  ├─ artifact_service.py
+│  │  ├─ publishers
+│  │  │  ├─ neo4j.py
+│  │  │  └─ redis_snapshot.py
+│  │  ├─ simulation
+│  │  │  ├─ api.py
+│  │  │  ├─ engine.py
+│  │  │  ├─ models.py
+│  │  │  └─ profiles.py
+│  │  ├─ scenarios
+│  │  │  ├─ models.py
+│  │  │  └─ service.py
+│  │  ├─ datasets
+│  │  │  └─ builder.py
+│  │  ├─ training
+│  │  │  └─ trainer.py
+│  │  ├─ offline_api.py
+│  │  ├─ settings.py
+│  │  └─ health.py
+│  ├─ scripts/run_offline_training_pipeline.py
 │  └─ requirements.txt
+├─ OFFLINE_TRAINING_GUIDE.md
 ├─ STARTUP.md
 └─ PROJECT_GUIDE.md
 ```
@@ -44,152 +65,183 @@ Vue 前端
   ↓ /api
 Spring Boot
   ├─→ Neo4j：拓扑读写
-  └─→ Python 8001：模型训练、预测、重置
-        ↓
-      artifacts：模型文件和元数据
+  └─→ Python 8001：标准电网、在线潮流、离线造数与训练
+        ├─→ SimBench + pandapower
+        ├─→ Neo4j：活动静态拓扑投影
+        ├─→ Redis：原子完整潮流快照
+        └─→ artifacts：模型文件和电网包
 ```
 
-前端只调用 Spring Boot，不直接调用 Python。训练和盲判时 Java 都会把当前 Neo4j 拓扑结构发送给 Python；Python 使用 GNN 完成整图定位与分类，Java 再完成上下游溯源。
+前端只调用Spring Boot，不直接调用Python。项目只保留一个Python工程和8001端口。
+离线训练读取P1权威包，不读取在线Neo4j/Redis；Java只提供手动代理接口，正常
+前端没有造数和训练入口。合格离线模型接入在线错误研判属于下一部分工作。
 
 ## 4. 电网拓扑模块
 
 ### 主要代码
 
 - `TopologyController`：提供拓扑查询和生成接口。
-- `TopologyRepository`：执行 Neo4j 查询和批量写入。
-- `GridTopologyGenerationService`：创建分层电网数据。
-- `TopologySection.vue`：展示拓扑、刷新数据和触发标准电网生成。
+- `TopologyRepository`：只查询Python服务发布并核对成功的活动Neo4j拓扑。
+- `GridTopologyGenerationService`：复用现有Java接口，依次完成权威包初始化和Neo4j幂等发布。
+- `GridRuntimeController`：在现有Java `/api` 下代理仿真控制、曲线元数据和Redis当前快照。
+- `PythonComputeGateway`：统一调用8001端口的电网、训练和研判接口。
+- `app/grid/artifact_service.py`：加载SimBench、校验、运行基准潮流并原子生成权威电网包。
+- `app/grid/publishers/neo4j.py`：把P1包投影为带专用标签、稳定ID、参数和标准端点关系的Neo4j活动模型。
+- `app/grid/simulation/profiles.py`：将SimBench曲线转成确定性的P/Q输入，支持`hold`和`linear`。
+- `app/grid/simulation/engine.py`：维护单线程连续潮流状态机并构建完整快照。
+- `app/grid/publishers/redis_snapshot.py`：通过Redis事务发布不可变完整快照和活动指针。
+- `TopologySection.vue`：展示活动SimBench拓扑，并在同一画布叠加当前潮流数据和仿真控制。
 
-### 标准电网结构
+### SimBench权威电网包
 
-默认生成：
+默认算例为`1-MV-urban--0-sw`，实际包含：
 
-- 1 座 500kV 枢纽站
-- 3 座 220kV 区域站
-- 9 座 110kV 变电站
-- 18 台主变压器
-- 18 组 10kV 母线
-- 36 个馈线开关
-- 108 个负荷
-- 约 193 个设备、217 条连接
+- 144个Bus
+- 147条Line
+- 2台Transformer
+- 305个Switch
+- 139个Load
+- 134个SGen
+- 1个ExternalGrid
+- 35136个时间点的负荷与新能源曲线
 
-同时包含区域环网、110kV联络线、母联开关和10kV备用联络线。
-
-生成器只替换带有以下标记的数据：
+生成过程会运行基准潮流，保存全部静态表、标准类型、稳定ID、拓扑关系、曲线元数据、基准结果、依赖版本和SHA-256校验和。正式产物位于：
 
 ```text
-generatedBy=dongjin-layered-grid-v1
+python-training-service/artifacts/grids/simbench-1-mv-urban-0-sw/v1/
 ```
 
-手工创建的 Neo4j 节点不会被删除。
+P1电网包是唯一权威源。Neo4j和Redis只是运行时投影：Neo4j保存活动版本的静态设备与关系，Redis保存同一版本当前时刻的动态潮流。发布器只管理`managedBy=dongjin-python-service`的数据，不删除用户自建节点。
 
 ### 拓扑接口
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/topology` | 查询全部 Device 节点和连接 |
-| POST | `/api/topology/generate` | 生成或替换程序创建的标准电网 |
+| GET | `/api/topology` | 查询活动GridModel包含的Device节点和标准连接 |
+| POST | `/api/topology/generate` | 生成/复用权威包，幂等发布Neo4j并激活 |
+| GET | `/api/topology/source` | 查询当前活动权威电网包 |
 
-生成规模可以通过以下字段调整：
+生成请求：
 
 ```json
 {
-  "regions": 3,
-  "substationsPerRegion": 3,
-  "feedersPerSubstation": 4,
-  "loadsPerFeeder": 3,
-  "seed": 20260717,
-  "replaceGenerated": true
+  "simbenchCode": "1-MV-urban--0-sw",
+  "topologyVersion": "v1",
+  "force": false
 }
 ```
 
-设备总数上限为 5000。
+相同版本已经存在且`force=false`时直接复用；`force=true`时在临时目录完成全部校验后原子替换该版本。
 
-## 5. 故障生成模块
+### 连续潮流与快照接口
 
-`FaultGenerationService` 从当前 Neo4j 拓扑中选择合法目标，生成带标签和特征的故障样本。
+| 方法 | Java路径 | 说明 |
+|---|---|---|
+| POST | `/api/simulation/start` | 启动唯一计算循环，可传`startTime`、`speedFactor`、`profileStrategy` |
+| POST | `/api/simulation/pause` | 暂停，不推进仿真时间 |
+| POST | `/api/simulation/resume` | 继续现有循环 |
+| POST | `/api/simulation/stop` | 停止循环，保留最后成功快照 |
+| GET | `/api/simulation/status` | 查询状态、步数、仿真时间、耗时和最后错误 |
+| GET | `/api/simulation/profiles` | 查询SimBench曲线范围、间隔、字段和单位 |
+| GET | `/api/snapshots/current` | 读取Redis活动指针指向的完整`grid-snapshot-v1` |
 
-当前支持：
+Redis键固定为`dongjin:grid:active`、`dongjin:snapshot:{snapshotId}`、`dongjin:snapshot:active`和`dongjin:simulation:status`。快照先完整写入并设置TTL，最后在同一事务中切换活动指针；潮流不收敛或快照非法时不发布。
 
-- `DEVICE_OFFLINE`：设备离线
-- `VOLTAGE_ANOMALY`：电压异常
-- `LINE_OVERLOAD`：线路过载
-- `LINE_DISCONNECTED`：线路断开
+## 5. 离线场景与训练数据
 
-样本包含目标设备、严重程度、随机种子、受影响设备和数值特征。相同拓扑、参数和随机种子可以复现相同的数据分布。
-
-页面和接口的默认生成量为 500 条。样本满足分层留出条件时，默认按照约 80%/20% 划分训练集和测试集，即通常为 400/100。
-
-训练时，每条带标签样本会被扩展成一个完整图快照：目标对象注入故障特征，一跳和二跳邻接对象加入逐级衰减的传播信号，其余对象使用正常观测。目标 ID 用于把故障放到图中的正确位置，但不会作为数值特征学习。因此 GNN 可以在一张拓扑上训练，再对节点数量不同的当前拓扑进行归纳式研判。模型使用 `targetIsEdge` 区分设备与线路，该字段由系统生成。
-
-样本目前保存在 `FaultSampleStore` 的进程内存中，Java 重启后会清空。
-
-## 6. 训练模块
-
-### Java 侧
-
-- `TrainingController`：暴露训练 REST API。
-- `TrainingJobService`：异步执行训练任务并维护状态。
-- `PythonTrainingGateway`：通过 HTTP 把样本传递给 Python。
-
-### Python 侧
-
-`python-training-service/app/main.py` 使用：
-
-- `DictVectorizer`：将可扩展特征字典转换为模型输入。
-- `StandardScaler`：按训练集缩放数值特征。
-- NumPy 与 SciPy 稀疏矩阵：实现两层 GCN，使用归一化邻接矩阵执行两轮消息传播，包含 ReLU、Softmax、类别加权交叉熵和 Adam 反向传播，是主训练与主研判模型。
-- `joblib`：保存模型。
-- FastAPI：提供训练、预测、模型查询和重置接口。
-
-图的建模方式为：每个设备是一个 GNN 顶点，每条线路也作为一个 GNN 顶点，线路顶点分别连接源设备和目标设备。这样设备故障、线路故障都能使用统一的顶点分类输出，并通过两层消息传播接收邻接对象的状态。
-
-训练完成后会返回 GNN 指标并自动激活模型。页面中的“GNN最终准确率”表示测试图中故障位置和故障类型同时正确；另行显示 GNN 定位准确率，以及 Precision、Recall、F1和混淆矩阵元数据。
-
-模型默认保存在：
+第二部分不再使用 Java 内存随机样本。`FaultGenerationService`、`FaultSampleStore`
+和 `TrainingJobService` 等旧链路已经删除，正式训练数据统一来自：
 
 ```text
-python-training-service/artifacts
+P1权威电网包
+  → 独立pandapower场景副本
+  → TruthSnapshot
+  → MeasurementFrame
+  → GNN Dataset
 ```
 
-可以通过 `DONGJIN_MODEL_DIR` 环境变量修改。
+Python 侧主要代码：
 
-### Java 训练接口
+- `app/grid/scenarios/models.py`：场景、事件和质量码契约。
+- `app/grid/scenarios/service.py`：基线/事件潮流、量测变换、标签和场景档案。
+- `app/grid/datasets/builder.py`：稳定ID图、48维特征、缺失掩码和场景级切分。
+- `app/grid/training/trainer.py`：两层GCN、早停、阈值校准、评估和资格门禁。
+- `app/grid/offline_api.py`：场景、数据集和模型的统一FastAPI入口。
+
+正式可见数据位于：
+
+```text
+python-training-service/artifacts/
+├── scenarios/
+├── datasets/
+└── models/
+```
+
+每一层都同时保存人工可读的 JSON、JSONL、CSV、README 和机器高效读取的
+Parquet/joblib；Manifest记录P1版本、图签名、Schema、随机种子和SHA-256。
+详细文件树、指标和使用命令见 `OFFLINE_TRAINING_GUIDE.md`。
+
+## 6. GNN离线训练模块
+
+训练必须由命令或API显式启动，场景生成和数据集构建完成后不会自动训练，
+训练完成后也不会自动接入在线研判。
+
+图中每个P1对象是一个顶点，关系由P1拓扑构建。模型读取MeasurementFrame派生
+的48个显式特征，标签和物理核对来自TruthSnapshot与ScenarioDefinition。
+训练、验证和测试按完整`scenarioRunId`切分，不按节点行随机切分。
+
+正式数据集 `p1-v1-gnn-dataset-v1` 包含108个场景、94,176行、872个顶点、
+1,182条图边；正式模型 `p1-v1-gcn-model-v3` 已通过提高后的严格配置门槛。
+被拒绝的v1模型仍作为白箱失败记录保存。
+
+### Python离线接口
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/training/errors/generate` | 生成故障样本 |
-| GET | `/api/training/errors` | 查询当前样本 |
-| DELETE | `/api/training/errors` | 清空当前样本 |
-| POST | `/api/training/jobs` | 创建异步训练任务 |
-| GET | `/api/training/jobs/{id}` | 查询训练进度和指标 |
-| GET | `/api/training/models/active` | 查询当前激活模型 |
-| POST | `/api/training/reset` | 重置模型、样本和训练记录 |
+| POST | `/offline/scenario-batches/generate` | 生成可见场景批次 |
+| GET | `/offline/scenario-batches` | 列出场景批次 |
+| GET | `/offline/scenario-batches/{batchId}` | 查看批次Manifest |
+| POST | `/offline/datasets/build` | 构建可见GNN数据集 |
+| GET | `/offline/datasets` | 列出数据集 |
+| GET | `/offline/datasets/{datasetId}` | 查看数据集Manifest |
+| GET | `/offline/datasets/{datasetId}/preview` | 浏览CSV数据预览 |
+| POST | `/offline/training/run` | 显式训练一个版本 |
+| GET | `/offline/models` | 列出模型 |
+| GET | `/offline/models/{modelId}` | 查看模型Manifest与指标 |
 
-### Python 内部接口
+### Java统一代理
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/health` | 健康检查 |
-| POST | `/train` | 训练并激活模型 |
-| POST | `/predict/batch` | 使用 GNN 对完整拓扑执行主研判 |
-| GET | `/models/active` | 查询当前模型 |
-| DELETE | `/reset` | 删除当前及历史模型 |
+`TrainingController`与现有`PythonComputeGateway`只做代理，不在Java内复制场景
+或训练状态。路径位于：
 
-## 7. 训练重置
+```text
+/api/training/offline/scenario-batches
+/api/training/offline/datasets
+/api/training/offline/models
+```
 
-第二板块的“重置训练”会：
+各资源同时提供列表、单项详情和数据集预览接口。正常前端没有恢复训练模块。
 
-1. 删除 Python 当前激活模型。
-2. 删除 Python 历史模型文件和元数据。
-3. 清空 Java 内存中的故障样本。
-4. 清空已完成的训练任务和页面指标。
+## 7. 手动训练与白箱验收
 
-训练任务正在运行时不允许重置，避免后台任务重新生成模型。
+完整离线命令：
+
+```powershell
+cd E:\Java\DONGJIN\python-training-service
+.\.venv\Scripts\python.exe scripts\run_offline_training_pipeline.py `
+  --samples-per-type 12 `
+  --random-seed 20260723 `
+  --maximum-epochs 120
+```
+
+P1包存在时，这条命令不要求Neo4j、Memurai、Java和前端处于运行状态。输出的
+场景、数据集、训练历史、指标和逐场景预测均保存在E盘项目目录中。
 
 ## 8. 错误研判模块
 
-第三板块采用“前端持有真值、后端与 Python 盲判”的测试流程。必须使用新的 GNN 模型，因此升级后需要重置旧模型、重新生成 500 条样本并训练一次。
+第三板块当前保留“前端持有真值、后端与Python盲判”的演示流程，但尚未接入
+第二部分的合格离线模型。不得再通过旧随机样本训练；下一部分需要建立
+MeasurementFrame到离线模型48维特征的在线适配、模型注册和兼容性门禁。
 
 ### 测试流程与隔离边界
 

@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { fetchTopology } from '../services/topologyService'
-import { locateFault } from '../services/trainingService'
+import { locateFault } from '../services/diagnosisService'
 
 const emit = defineEmits(['diagnosed'])
 
@@ -64,7 +64,7 @@ async function loadTopology() {
 
 async function generateAndDiagnose() {
   if (!topology.value.nodes.length || !topology.value.edges.length) {
-    errorMessage.value = '当前拓扑不完整，请先在第一板块生成标准电网。'
+    errorMessage.value = '当前Neo4j活动拓扑不完整；请先在拓扑区执行“生成并发布SimBench拓扑”。'
     return
   }
 

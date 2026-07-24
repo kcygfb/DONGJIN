@@ -2,7 +2,6 @@
 import { ref } from 'vue'
 import DiagnosisSection from './components/DiagnosisSection.vue'
 import TopologySection from './components/TopologySection.vue'
-import TrainingSection from './components/TrainingSection.vue'
 
 const diagnosisResult = ref(null)
 </script>
@@ -19,7 +18,6 @@ const diagnosisResult = ref(null)
         :diagnosis="diagnosisResult"
         @topology-changed="diagnosisResult = null"
       />
-      <TrainingSection />
       <DiagnosisSection @diagnosed="diagnosisResult = $event" />
     </section>
   </main>

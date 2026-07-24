@@ -97,7 +97,6 @@ p {
 .topology-section {
   display: flex;
   flex-direction: column;
-  grid-row: span 2;
   min-height: calc(100vh - 220px);
 }
 
@@ -160,10 +159,57 @@ p {
   color: var(--accent);
 }
 
+.topology-source-message {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+}
+
 .topology-trace-message {
   display: block;
   margin-top: 4px;
   color: #7c3aed;
+}
+
+.simulation-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+
+.simulation-status {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.simulation-status small {
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+}
+
+.simulation-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.simulation-actions select {
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface);
 }
 
 .topology-state {
@@ -294,8 +340,15 @@ p {
   stroke-width: 8;
 }
 
+.topology-node--runtime-warning circle {
+  fill: #fef2f2;
+  stroke: #dc2626;
+  stroke-width: 7;
+}
+
 .topology-node-name,
-.topology-node-meta {
+.topology-node-meta,
+.topology-node-runtime {
   text-anchor: middle;
 }
 
@@ -326,6 +379,12 @@ p {
   justify-content: flex-end;
   gap: 10px;
   margin: 14px 0;
+}
+
+.topology-node-runtime {
+  fill: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .diagnosis-examples {
@@ -588,177 +647,6 @@ p {
   cursor: not-allowed;
 }
 
-.training-panel {
-  gap: 14px;
-}
-
-.training-heading {
-  flex-direction: row;
-  align-items: flex-start;
-  justify-content: space-between;
-  margin-bottom: 0;
-}
-
-.training-heading h2 {
-  margin-top: 6px;
-}
-
-.training-count {
-  padding: 5px 9px;
-  border-radius: 999px;
-  color: var(--accent);
-  background: rgba(15, 118, 110, 0.08);
-  font-size: 12px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.training-form {
-  display: grid;
-  gap: 12px;
-}
-
-.training-field-row {
-  display: grid;
-  grid-template-columns: 1fr 1.4fr;
-  gap: 10px;
-}
-
-.training-field {
-  display: grid;
-  gap: 6px;
-  color: var(--text-strong);
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.training-field input {
-  width: 100%;
-  min-height: 36px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text);
-  background: var(--surface-muted);
-  font: inherit;
-}
-
-.training-field input:focus {
-  border-color: var(--accent);
-  outline: 3px solid rgba(15, 118, 110, 0.12);
-}
-
-.fault-type-fieldset {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px 12px;
-  margin: 0;
-  padding: 10px 12px 12px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-}
-
-.fault-type-fieldset legend {
-  padding: 0 5px;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.fault-type-option {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text);
-  font-size: 13px;
-}
-
-.fault-type-option input {
-  accent-color: var(--accent);
-}
-
-.sample-summary,
-.training-progress-card {
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--surface-muted);
-}
-
-.sample-distribution {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 9px;
-}
-
-.sample-distribution span {
-  padding: 3px 7px;
-  border-radius: 4px;
-  color: var(--text-muted);
-  background: #ffffff;
-  font-size: 11px;
-}
-
-.sample-preview {
-  display: grid;
-  gap: 6px;
-}
-
-.sample-preview-row {
-  display: grid;
-  grid-template-columns: 72px minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: center;
-  font-size: 12px;
-}
-
-.sample-preview-row strong {
-  overflow: hidden;
-  color: var(--text-strong);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sample-preview-row small {
-  color: var(--text-muted);
-}
-
-.training-status-line {
-  display: flex;
-  justify-content: space-between;
-  font-size: 13px;
-}
-
-.training-status-line strong {
-  color: var(--accent);
-}
-
-.training-progress-track {
-  height: 7px;
-  margin: 9px 0 6px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: #e5eaf0;
-}
-
-.training-progress-track span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--accent);
-  transition: width 240ms ease;
-}
-
-.training-progress-card small {
-  color: var(--text-muted);
-}
-
-.metric-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-}
-
 .diagnosis-input {
   min-height: 205px;
   font-family: "Cascadia Code", Consolas, monospace;
@@ -848,102 +736,6 @@ p {
   font-size: 11px;
   font-weight: 700;
   text-align: right;
-}
-
-.training-result-summary {
-  display: grid;
-  gap: 8px;
-  padding: 10px;
-  border: 1px solid rgba(15, 118, 110, 0.2);
-  border-radius: 7px;
-  background: rgba(15, 118, 110, 0.035);
-}
-
-.training-result-summary > p {
-  color: var(--text-strong);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.metric-grid div {
-  display: grid;
-  gap: 4px;
-  padding: 9px;
-  border-radius: 6px;
-  background: rgba(15, 118, 110, 0.07);
-}
-
-.metric-grid span {
-  color: var(--text-muted);
-  font-size: 11px;
-}
-
-.metric-grid strong {
-  color: var(--accent-dark);
-  font-size: 16px;
-}
-
-.metric-grid small {
-  color: var(--text-muted);
-  font-size: 10px;
-}
-
-.model-metric-detail {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 8px;
-}
-
-.model-metric-detail div {
-  display: grid;
-  gap: 3px;
-  padding: 8px 9px;
-  border: 1px solid rgba(15, 118, 110, 0.13);
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.72);
-}
-
-.model-metric-detail span,
-.model-metric-detail small {
-  color: var(--text-muted);
-  font-size: 10px;
-}
-
-.model-metric-detail strong {
-  color: var(--text-strong);
-  font-size: 14px;
-}
-
-.training-message {
-  color: var(--accent-dark);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.training-message--error {
-  color: #b42318;
-}
-
-.training-start {
-  margin-top: auto;
-}
-
-.training-action-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 10px;
-  margin-top: auto;
-}
-
-.training-reset {
-  color: #b42318;
-  border-color: #f0b7b2;
-}
-
-.training-reset:hover:not(:disabled) {
-  color: #912018;
-  border-color: #dc2626;
-  background: #fef2f2;
 }
 
 .result-box {

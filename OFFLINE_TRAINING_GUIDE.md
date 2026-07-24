@@ -1,0 +1,211 @@
+# 离线训练与数据白箱使用说明
+
+## 1. 这条链路做什么
+
+第二部分只读取第一部分冻结的 P1 权威电网包，在独立的 pandapower 网络副本上生成场景：
+
+```text
+P1 权威电网包
+  → 正常/故障场景定义
+  → pandapower 基线潮流与事件潮流
+  → 物理真值 TruthSnapshot
+  → 带噪声和质量码的 MeasurementFrame
+  → 可见训练表 + Parquet
+  → 手动启动两层 GCN 训练
+  → 指标、逐场景预测和版本化模型
+```
+
+这条离线链路不读取或写入 Neo4j、Redis，也不会改变在线连续潮流。所有故障均为训练用途的模拟事件，不代表真实生产故障。
+
+## 2. 一条命令生成数据并训练
+
+P1 权威电网包已存在时，不需要启动 Neo4j、Memurai、Java 或前端：
+
+```powershell
+cd E:\Java\DONGJIN\python-training-service
+.\.venv\Scripts\python.exe scripts\run_offline_training_pipeline.py `
+  --samples-per-type 12 `
+  --random-seed 20260723 `
+  --maximum-epochs 120
+```
+
+命令依次生成场景批次、数据集和模型，完成后会打印三者的绝对路径。每次默认产生新的版本 ID，不会覆盖已有数据。
+
+也可以分三步通过 Python API 或 Java 代理接口手动执行，详见本文第 7 节。
+
+## 3. 用户可以直接查看的数据
+
+正式验收数据位于：
+
+```text
+python-training-service/artifacts/
+├── scenarios/p1-v1-offline-training-v1/
+├── datasets/p1-v1-gnn-dataset-v1/
+└── models/
+    ├── p1-v1-gcn-model-v1/   # 门槛校准前的 REJECTED 记录
+    ├── p1-v1-gcn-model-v2/   # 阈值校准后的初始 QUALIFIED 记录
+    └── p1-v1-gcn-model-v3/   # 当前严格门槛 QUALIFIED 模型
+```
+
+### 3.1 场景档案
+
+正式批次含 108 个场景，9 类各 12 个，全部潮流计算成功。批次根目录包含：
+
+| 文件 | 用途 |
+|---|---|
+| `README.md` | 人工阅读入口 |
+| `manifest.json` | 电网版本、种子、类别分布、文件清单与 SHA-256 |
+| `scenario-index.csv` | 108 个场景的一行一条索引 |
+| `field-catalog.json` | 三层数据字段说明 |
+| `request.json` | 本批次原始生成参数 |
+
+每个 `runs/{scenarioRunId}` 都公开以下文件：
+
+| 文件 | 内容 |
+|---|---|
+| `scenario.json` | 根因、目标 businessId、事件参数和随机种子 |
+| `truth/baseline.json` | 同一时刻无事件的 pandapower 基线真值 |
+| `truth/event.json` | 施加事件后的 pandapower 真值 |
+| `measurements/frame.json` | 实际送入数据集的模拟量测 |
+| `measurements/transform-audit.jsonl` | 每个量测字段从真值到输出值的逐步变换 |
+| `labels.json` | 根因、目标和影响标签 |
+| `validation.json` | 收敛性、对象覆盖和追溯校验 |
+| `summary.md` | 单场景人工摘要 |
+
+因此可以明确回答三个问题：代码主动施加了什么、潮流算出了什么、模型最终看到了什么。
+
+### 3.2 GNN 数据集
+
+正式数据集包含 94,176 行、108 个完整图场景、872 个图顶点、1,182 条图边和 48 个显式特征。数据按 `scenarioRunId` 切分：
+
+| 集合 | 场景数 |
+|---|---:|
+| 训练集 | 63 |
+| 验证集 | 18 |
+| 测试集 | 27 |
+
+用户可直接打开：
+
+| 文件 | 用途 |
+|---|---|
+| `preview-first-1000-rows.csv` | 快速查看前 1,000 行 |
+| `samples.csv` | 完整可见表，Excel/文本工具可读 |
+| `samples.jsonl` | 完整流式 JSON 明细 |
+| `sample-summary.csv` | 每个场景的样本摘要 |
+| `split-summary.csv` | 切分和类别分布 |
+| `graph.json` | 872 个顶点及 1,182 条边 |
+| `feature-schema.json` | 48 个特征的单位、类型、缺失和含义 |
+| `label-schema.json` | 标签定义 |
+| `normalization.json` | 仅由训练集计算的均值和标准差 |
+| `train.parquet`、`validation.parquet`、`test.parquet` | 模型高效读取文件 |
+| `manifest.json` | 来源场景、P1 版本、图签名和全部校验和 |
+
+CSV 使用 UTF-8 BOM，便于 Windows Excel 直接显示中文；Parquet 是机器训练格式，不是唯一保存格式。
+
+### 3.3 模型与评估
+
+每个模型目录都公开：
+
+| 文件 | 用途 |
+|---|---|
+| `README.md` | 模型状态和阅读入口 |
+| `manifest.json` | 数据集、P1、图签名、Schema、结构和状态 |
+| `training-config.json` | 超参数、随机种子和验收门槛 |
+| `training-history.csv` | 每轮训练/验证损失 |
+| `metrics.json` | 验证集、测试集、混淆矩阵和逐类指标 |
+| `validation-predictions.csv` | 验证集逐场景预测 |
+| `test-predictions.csv` | 测试集逐场景预测 |
+| `feature-schema.json`、`label-schema.json` | 冻结的输入输出契约 |
+| `normalization.json` | 模型使用的归一化参数 |
+| `model.joblib` | 机器读取的模型权重 |
+
+`p1-v1-gcn-model-v1` 被明确保存为 `REJECTED`，用于保留第一次正常场景误报的
+证据；系统没有覆盖或伪装该结果。v2完成异常阈值校准。审查发现初始默认门槛
+偏低后，又将Macro F1、Top-5、精确诊断、正常图识别和故障召回门槛分别提高到
+0.70、0.70、0.65、0.80和0.75，生成严格门槛的v3，状态仍为`QUALIFIED`。
+
+当前 v3 测试集指标：
+
+| 指标 | 结果 |
+|---|---:|
+| 目标类别 Macro F1 | 86.67% |
+| 目标类别准确率 | 95.83% |
+| 故障位置 Top-1 | 79.17% |
+| 故障位置 Top-5 | 79.17% |
+| 精确诊断 | 75.00% |
+| 正常图识别率 | 100.00% |
+| 故障检测召回率 | 83.33% |
+
+这些结果只代表当前 SimBench 模拟数据上的离线测试，不等同于真实电网现场效果。
+
+## 4. 当前九类场景
+
+| 类别 | 数据变化来源 |
+|---|---|
+| `NORMAL` | SimBench 曲线 + 正常 pandapower 潮流 |
+| `LINE_OUTAGE` | 线路 `in_service=false` 后重新潮流 |
+| `TRANSFORMER_OUTAGE` | 变压器停运后重新潮流 |
+| `SWITCH_MISOPERATION` | 开关状态翻转后重新潮流 |
+| `LOAD_SURGE` | 负荷 P/Q 按随机倍率变化后重新潮流 |
+| `GENERATION_DROP` | 分布式电源出力下降后重新潮流 |
+| `MEASUREMENT_BIAS` | 物理真值不变，目标量测增加显式偏置 |
+| `MEASUREMENT_DROPOUT` | 物理真值不变，目标动态字段置为缺失并带质量码 |
+| `MEASUREMENT_FROZEN` | 物理真值不变，目标量测冻结为基线值 |
+
+所有随机参数均来自批次和场景的显式 `randomSeed`。
+
+## 5. 重要边界
+
+- P1 `network.json` 是只读原本；每个场景使用独立深拷贝。
+- 物理事件必须修改 pandapower 输入或拓扑后重新执行 `runpp()`，不直接改结果表。
+- 量测异常只修改 MeasurementFrame，不污染 TruthSnapshot。
+- Neo4j 只属于在线静态投影，Redis/Memurai 只属于在线动态快照。
+- 数据集按整个场景切分，禁止同一场景的节点行泄漏到不同集合。
+- 训练只能由命令或 API 显式启动；数据生成结束不会自动训练。
+- `QUALIFIED` 只表示通过当前配置门槛，不会自动激活或接入在线研判。
+- 正常前端没有训练按钮；训练是一条独立、手动的离线路线。
+
+## 6. 文件位置配置
+
+默认目录可以在 `.env` 中调整：
+
+```dotenv
+DONGJIN_SCENARIO_DATA_DIR=artifacts/scenarios
+DONGJIN_DATASET_DIR=artifacts/datasets
+DONGJIN_OFFLINE_MODEL_DIR=artifacts/models
+```
+
+相对路径按 `python-training-service` 解析。建议继续放在 E 盘项目目录中。
+
+## 7. 手动 API
+
+### Python 8001
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| POST | `/offline/scenario-batches/generate` | 生成并保存场景批次 |
+| GET | `/offline/scenario-batches` | 列出场景批次 |
+| GET | `/offline/scenario-batches/{batchId}` | 查看批次 Manifest |
+| POST | `/offline/datasets/build` | 从批次构建数据集 |
+| GET | `/offline/datasets` | 列出数据集 |
+| GET | `/offline/datasets/{datasetId}` | 查看数据集 Manifest |
+| GET | `/offline/datasets/{datasetId}/preview?limit=100` | 浏览 CSV 预览 |
+| POST | `/offline/training/run` | 显式训练一个模型 |
+| GET | `/offline/models` | 列出离线模型 |
+| GET | `/offline/models/{modelId}` | 查看模型 Manifest 和指标 |
+
+### Java 8080
+
+Java 继续复用现有 `PythonComputeGateway`，相应代理路径位于 `/api/training/offline/*`：
+
+| 方法 | 路径 |
+|---|---|
+| POST/GET | `/api/training/offline/scenario-batches` |
+| GET | `/api/training/offline/scenario-batches/{batchId}` |
+| POST/GET | `/api/training/offline/datasets` |
+| GET | `/api/training/offline/datasets/{datasetId}` |
+| GET | `/api/training/offline/datasets/{datasetId}/preview?limit=100` |
+| POST/GET | `/api/training/offline/models` |
+| GET | `/api/training/offline/models/{modelId}` |
+
+后端接口返回 `artifactPath`、可见 CSV 路径、指标路径和逐场景预测路径，程序使用者不需要猜文件保存在哪里。
