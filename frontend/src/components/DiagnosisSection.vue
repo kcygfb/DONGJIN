@@ -1,292 +1,209 @@
 <script setup>
-import { computed, nextTick, onMounted, ref } from 'vue'
-import { fetchTopology } from '../services/topologyService'
-import { locateFault } from '../services/diagnosisService'
+import { computed, onMounted, ref } from 'vue'
+import {
+  closeShadowSession,
+  createShadowSession,
+  diagnoseCurrentSnapshot,
+  diagnoseShadowSession,
+  fetchDiagnosisMonitor,
+  fetchInferenceModels,
+  revealShadowSession,
+  rollbackInferenceModel,
+  runShortCircuitAnalysis,
+  selectInferenceModel,
+  startDiagnosisMonitor,
+  stopDiagnosisMonitor,
+} from '../services/diagnosisService'
 
 const emit = defineEmits(['diagnosed'])
-
-const featureDefinitions = [
-  { key: 'voltagePu', label: '电压标幺值' },
-  { key: 'currentPu', label: '电流标幺值' },
-  { key: 'activePowerPu', label: '有功功率标幺值' },
-  { key: 'reactivePowerPu', label: '无功功率标幺值' },
-  { key: 'temperatureC', label: '温度（℃）' },
-  { key: 'connectivityRatio', label: '连接率' },
-  { key: 'alarmCount', label: '告警数量' },
-  { key: 'topologyDegree', label: '拓扑连接度' },
-]
-
-const faultDefinitions = [
-  { type: 'DEVICE_OFFLINE', label: '设备离线', targetKind: 'NODE' },
-  { type: 'VOLTAGE_ANOMALY', label: '电压异常', targetKind: 'NODE' },
-  { type: 'LINE_OVERLOAD', label: '线路过载', targetKind: 'EDGE' },
-  { type: 'LINE_DISCONNECTED', label: '线路断开', targetKind: 'EDGE' },
-]
-
-const faultLabels = Object.fromEntries(
-  faultDefinitions.map((definition) => [definition.type, definition.label]),
-)
-
-const topology = ref({ nodes: [], edges: [] })
-const groundTruth = ref(null)
-const diagnosisResult = ref(null)
-const isLoadingTopology = ref(false)
-const isDiagnosing = ref(false)
+const models = ref([])
+const selectedModel = ref(null)
+const chosenModelId = ref('')
+const diagnosis = ref(null)
+const shadow = ref(null)
+const comparison = ref(null)
+const shortCircuit = ref(null)
+const shadowEventType = ref('RANDOM')
+const shadowTargetId = ref('')
+const shortCircuitTargetId = ref('')
+const shortCircuitType = ref('3ph')
+const shortCircuitPowerMva = ref('')
+const shortCircuitRx = ref('')
+const busy = ref('')
 const errorMessage = ref('')
+const message = ref('')
+const monitor = ref({ state: 'STOPPED' })
 
-const comparison = computed(() => {
-  if (!groundTruth.value || !diagnosisResult.value) {
-    return null
-  }
-  const locationMatch = groundTruth.value.targetKind === diagnosisResult.value.target.kind
-    && groundTruth.value.targetId === diagnosisResult.value.target.id
-  const typeMatch = groundTruth.value.faultType === diagnosisResult.value.prediction.predictedFaultType
-  return {
-    locationMatch,
-    typeMatch,
-    exactMatch: locationMatch && typeMatch,
+const shadowEvents = [
+  'RANDOM',
+  'LINE_OUTAGE',
+  'TRANSFORMER_OUTAGE',
+  'SWITCH_MISOPERATION',
+  'LOAD_SURGE',
+  'GENERATION_DROP',
+  'MEASUREMENT_BIAS',
+  'MEASUREMENT_DROPOUT',
+  'MEASUREMENT_FROZEN',
+  'MEASUREMENT_DRIFT',
+  'MEASUREMENT_DELAY',
+  'MEASUREMENT_QUANTIZATION',
+  'TAP_POSITION_ANOMALY',
+]
+
+const modelState = computed(() => {
+  if (!selectedModel.value) return '尚未人工选择在线模型'
+  return `${selectedModel.value.modelId} · ${selectedModel.value.selectedBy || 'manual'}`
+})
+
+onMounted(async () => {
+  await loadModels()
+  try {
+    monitor.value = await fetchDiagnosisMonitor()
+  } catch {
+    // 主错误区由用户执行操作时再显示。
   }
 })
 
-onMounted(loadTopology)
-
-async function loadTopology() {
-  isLoadingTopology.value = true
+async function run(action, callback) {
+  busy.value = action
   errorMessage.value = ''
+  message.value = ''
   try {
-    topology.value = await fetchTopology()
+    return await callback()
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '当前拓扑加载失败'
+    errorMessage.value = error instanceof Error ? error.message : '操作失败'
+    return null
   } finally {
-    isLoadingTopology.value = false
+    busy.value = ''
   }
 }
 
-async function generateAndDiagnose() {
-  if (!topology.value.nodes.length || !topology.value.edges.length) {
-    errorMessage.value = '当前Neo4j活动拓扑不完整；请先在拓扑区执行“生成并发布SimBench拓扑”。'
+async function loadModels() {
+  await run('models', async () => {
+    const result = await fetchInferenceModels()
+    models.value = result.models || []
+    selectedModel.value = result.selectedModel
+    chosenModelId.value = selectedModel.value?.modelId || models.value[0]?.modelId || ''
+  })
+}
+
+async function handleSelectModel() {
+  if (!chosenModelId.value) return
+  if (!window.confirm(`确认将 ${chosenModelId.value} 设为在线推理模型？该操作不会启动训练或研判。`)) return
+  await run('select', async () => {
+    selectedModel.value = await selectInferenceModel(chosenModelId.value)
+    message.value = '模型兼容检查通过，人工选择记录已保存。'
+    await loadModels()
+  })
+}
+
+async function handleRollback() {
+  if (!window.confirm('确认回滚到上一次人工模型选择？')) return
+  await run('rollback', async () => {
+    selectedModel.value = await rollbackInferenceModel()
+    message.value = `已人工回滚到 ${selectedModel.value.modelId}`
+    await loadModels()
+  })
+}
+
+async function handleCurrentDiagnosis() {
+  await run('current', async () => {
+    diagnosis.value = await diagnoseCurrentSnapshot()
+    comparison.value = null
+    emitHighlight(diagnosis.value)
+  })
+}
+
+async function handleMonitor(action) {
+  await run(`monitor-${action}`, async () => {
+    monitor.value = action === 'start'
+      ? await startDiagnosisMonitor()
+      : await stopDiagnosisMonitor()
+    message.value = action === 'start'
+      ? '周期研判已由你显式启动；页面刷新本身不会触发研判。'
+      : '周期研判已停止。'
+  })
+}
+
+async function handleCreateShadow() {
+  if (!selectedModel.value) {
+    errorMessage.value = '请先在独立模型管理区人工选择在线模型。'
     return
   }
-
-  isDiagnosing.value = true
-  errorMessage.value = ''
-  diagnosisResult.value = null
-  emit('diagnosed', null)
-
-  try {
-    const testCase = createBlindTestCase(topology.value)
-    groundTruth.value = testCase.groundTruth
-
-    // Let the written ground truth render before sending the unlabeled observations.
-    await nextTick()
-    diagnosisResult.value = await locateFault({
-      observations: testCase.observations,
-      topK: 4,
-      traceDepth: 4,
+  await run('shadow-create', async () => {
+    if (shadow.value?.sessionId) await closeShadowSession(shadow.value.sessionId)
+    shadow.value = await createShadowSession({
+      eventType: shadowEventType.value === 'RANDOM' ? null : shadowEventType.value,
+      targetBusinessId: shadowTargetId.value || null,
     })
-    emit('diagnosed', diagnosisResult.value)
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '自动定位研判失败'
-  } finally {
-    isDiagnosing.value = false
-  }
+    diagnosis.value = null
+    comparison.value = null
+    message.value = `影子会话 ${shadow.value.sessionId} 已隔离生成；真值尚未揭示。`
+  })
 }
 
-function createBlindTestCase(currentTopology) {
-  const degreeByNodeId = calculateDegrees(currentTopology.nodes, currentTopology.edges)
-  const definition = randomItem(faultDefinitions)
-  const targets = definition.targetKind === 'NODE' ? currentTopology.nodes : currentTopology.edges
-  const target = randomItem(targets)
-  const observations = [
-    ...currentTopology.nodes.map((node) => ({
-      targetKind: 'NODE',
-      targetId: node.id,
-      features: normalFeatures(degreeByNodeId.get(node.id) || 0),
-    })),
-    ...currentTopology.edges.map((edge) => ({
-      targetKind: 'EDGE',
-      targetId: edge.id,
-      features: normalFeatures(2),
-    })),
-  ]
-  const targetObservation = observations.find((observation) => {
-    return observation.targetKind === definition.targetKind && observation.targetId === target.id
+async function handleShadowDiagnosis() {
+  if (!shadow.value) return
+  await run('shadow-diagnose', async () => {
+    diagnosis.value = await diagnoseShadowSession(shadow.value.sessionId)
+    emitHighlight(diagnosis.value)
   })
-  const targetDegree = definition.targetKind === 'NODE' ? degreeByNodeId.get(target.id) || 0 : 2
-  targetObservation.features = faultFeatures(definition.type, targetDegree)
-  const affectedObservationCount = applyObservationPropagation(
-    observations,
-    currentTopology,
-    definition.targetKind,
-    target.id,
-    targetObservation.features,
-  )
+}
 
-  return {
-    groundTruth: {
-      injectionId: `blind-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-      generatedAt: new Date().toISOString(),
-      faultType: definition.type,
-      faultLabel: definition.label,
-      targetKind: definition.targetKind,
-      targetId: target.id,
-      targetName: target.name,
-      features: targetObservation.features,
-      observationCount: observations.length,
-      affectedObservationCount,
+async function handleReveal() {
+  if (!shadow.value || !diagnosis.value) return
+  await run('shadow-reveal', async () => {
+    comparison.value = await revealShadowSession(shadow.value.sessionId)
+  })
+}
+
+async function handleShortCircuit() {
+  if (!shortCircuitTargetId.value) {
+    errorMessage.value = '请输入P1母线businessId。'
+    return
+  }
+  if (!Number(shortCircuitPowerMva.value) || !Number(shortCircuitRx.value)) {
+    errorMessage.value = 'SimBench P1不含外部电网短路参数，请输入已知的短路容量和R/X。'
+    return
+  }
+  await run('short-circuit', async () => {
+    shortCircuit.value = await runShortCircuitAnalysis({
+      targetBusinessId: shortCircuitTargetId.value,
+      faultType: shortCircuitType.value,
+      case: 'max',
+      sScMva: Number(shortCircuitPowerMva.value),
+      rx: Number(shortCircuitRx.value),
+    })
+  })
+}
+
+function emitHighlight(result) {
+  if (!result?.targetBusinessId) {
+    emit('diagnosed', null)
+    return
+  }
+  emit('diagnosed', {
+    target: { kind: 'NODE', id: result.targetBusinessId },
+    trace: {
+      upstream: (result.neo4jTrace?.upstream || result.upstreamTrace || []).map((item) => ({
+        nodeId: item.businessId,
+        depth: item.depth,
+      })),
+      downstream: (result.neo4jTrace?.downstream || result.downstreamTrace || []).map((item) => ({
+        nodeId: item.businessId,
+        depth: item.depth,
+      })),
+      nodeIds: [
+        result.targetBusinessId,
+        ...(result.neighborTrace || []).map((item) => item.businessId),
+      ],
+      edgeIds: [],
     },
-    observations,
-  }
-}
-
-function applyObservationPropagation(observations, currentTopology, targetKind, targetId, faultValues) {
-  const keyOf = (kind, id) => `${kind}:${id}`
-  const neighbors = new Map(observations.map((item) => [keyOf(item.targetKind, item.targetId), []]))
-  currentTopology.edges.forEach((edge) => {
-    const edgeKey = keyOf('EDGE', edge.id)
-    for (const nodeId of [edge.source, edge.target]) {
-      const nodeKey = keyOf('NODE', nodeId)
-      neighbors.get(nodeKey)?.push(edgeKey)
-      neighbors.get(edgeKey)?.push(nodeKey)
-    }
   })
-
-  const sourceKey = keyOf(targetKind, targetId)
-  const distances = new Map([[sourceKey, 0]])
-  const queue = [sourceKey]
-  while (queue.length) {
-    const current = queue.shift()
-    const distance = distances.get(current)
-    if (distance >= 2) continue
-    for (const neighbor of neighbors.get(current) || []) {
-      if (!distances.has(neighbor)) {
-        distances.set(neighbor, distance + 1)
-        queue.push(neighbor)
-      }
-    }
-  }
-
-  let affectedCount = 1
-  observations.forEach((observation) => {
-    const distance = distances.get(keyOf(observation.targetKind, observation.targetId))
-    const factor = distance === 1 ? 0.22 : distance === 2 ? 0.08 : 0
-    if (!factor) return
-    affectedCount += 1
-    observation.features = blendFeatures(observation.features, faultValues, factor)
-  })
-  return affectedCount
-}
-
-function blendFeatures(normal, fault, factor) {
-  const blended = { ...normal }
-  Object.keys(blended).forEach((key) => {
-    if (key === 'topologyDegree') return
-    const value = blended[key] * (1 - factor) + fault[key] * factor
-    blended[key] = key === 'alarmCount' ? Math.round(value) : round(value)
-  })
-  blended.connectivityRatio = Math.max(0, Math.min(1, blended.connectivityRatio))
-  return blended
-}
-
-function calculateDegrees(nodes, edges) {
-  const degrees = new Map(nodes.map((node) => [node.id, 0]))
-  edges.forEach((edge) => {
-    degrees.set(edge.source, (degrees.get(edge.source) || 0) + 1)
-    degrees.set(edge.target, (degrees.get(edge.target) || 0) + 1)
-  })
-  return degrees
-}
-
-function normalFeatures(degree) {
-  return featureSet(
-    randomBetween(0.975, 1.025),
-    randomBetween(0.35, 0.75),
-    randomBetween(0.30, 0.66),
-    randomBetween(0.07, 0.23),
-    randomBetween(32, 48),
-    randomBetween(0.96, 1),
-    Math.random() < 0.86 ? 0 : 1,
-    degree,
-  )
-}
-
-function faultFeatures(type, degree) {
-  switch (type) {
-    case 'DEVICE_OFFLINE':
-      return featureSet(
-        randomBetween(0.01, 0.05), randomBetween(0, 0.03), randomBetween(0, 0.02),
-        randomBetween(0, 0.01), randomBetween(28, 38), randomBetween(0.03, 0.16),
-        randomInteger(5, 7), degree,
-      )
-    case 'VOLTAGE_ANOMALY': {
-      const voltage = Math.random() < 0.5 ? randomBetween(0.62, 0.78) : randomBetween(1.23, 1.36)
-      return featureSet(
-        voltage, randomBetween(0.72, 0.94), randomBetween(0.59, 0.76),
-        randomBetween(0.29, 0.42), randomBetween(54, 66), randomBetween(0.82, 0.9),
-        randomInteger(3, 5), degree,
-      )
-    }
-    case 'LINE_OVERLOAD':
-      return featureSet(
-        randomBetween(0.86, 0.93), randomBetween(1.48, 1.75), randomBetween(1.31, 1.58),
-        randomBetween(0.43, 0.58), randomBetween(82, 101), randomBetween(0.85, 0.92),
-        randomInteger(4, 6), degree,
-      )
-    case 'LINE_DISCONNECTED':
-      return featureSet(
-        randomBetween(0.12, 0.24), randomBetween(0, 0.025), randomBetween(0, 0.02),
-        randomBetween(0, 0.02), randomBetween(29, 40), randomBetween(0.03, 0.16),
-        randomInteger(7, 9), degree,
-      )
-    default:
-      throw new Error(`不支持的测试故障：${type}`)
-  }
-}
-
-function featureSet(
-  voltagePu,
-  currentPu,
-  activePowerPu,
-  reactivePowerPu,
-  temperatureC,
-  connectivityRatio,
-  alarmCount,
-  topologyDegree,
-) {
-  return {
-    voltagePu: round(voltagePu),
-    currentPu: round(currentPu),
-    activePowerPu: round(activePowerPu),
-    reactivePowerPu: round(reactivePowerPu),
-    temperatureC: round(temperatureC),
-    connectivityRatio: round(connectivityRatio),
-    alarmCount,
-    topologyDegree,
-  }
-}
-
-function randomItem(values) {
-  return values[Math.floor(Math.random() * values.length)]
-}
-
-function randomBetween(minimum, maximum) {
-  return minimum + Math.random() * (maximum - minimum)
-}
-
-function randomInteger(minimum, maximum) {
-  return Math.floor(randomBetween(minimum, maximum + 1))
-}
-
-function round(value) {
-  return Math.round(value * 10_000) / 10_000
-}
-
-function faultLabel(type) {
-  return faultLabels[type] || type || '未知故障'
 }
 
 function percent(value) {
-  return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '--'
+  return Number.isFinite(value) ? `${(value * 100).toFixed(2)}%` : '--'
 }
 </script>
 
@@ -294,116 +211,118 @@ function percent(value) {
   <section class="workspace-section diagnosis-section" aria-labelledby="diagnosis-title">
     <div class="section-header diagnosis-heading">
       <div>
-        <p class="section-eyebrow">Blind Diagnosis</p>
-        <h2 id="diagnosis-title">全拓扑盲判与溯源</h2>
+        <p class="section-eyebrow">White-box Diagnosis</p>
+        <h2 id="diagnosis-title">在线错误研判与影子盲测</h2>
       </div>
-      <span class="diagnosis-model-state">真值仅保存在前端</span>
+      <span class="diagnosis-model-state">{{ modelState }}</span>
     </div>
-
-    <div class="blind-workflow-note">
-      <strong>测试隔离流程</strong>
-      <span>前端注入真值 → 生成全拓扑无标签观测 → Java/Python 盲判 → 前端对比答案</span>
-    </div>
-
-    <button
-      class="primary-action blind-start"
-      type="button"
-      :disabled="isLoadingTopology || isDiagnosing || !topology.nodes.length"
-      @click="generateAndDiagnose"
-    >
-      {{ isDiagnosing ? '正在扫描全拓扑并研判…' : groundTruth ? '重新生成隐藏故障并盲判' : '生成隐藏故障并开始盲判' }}
-    </button>
 
     <p v-if="errorMessage" class="diagnosis-error" role="alert">{{ errorMessage }}</p>
+    <p v-if="message" class="topology-generation-message">{{ message }}</p>
 
-    <section v-if="groundTruth" class="ground-truth-card" aria-labelledby="ground-truth-title">
+    <section class="ground-truth-card">
       <div>
-        <span>测试真值 · 仅浏览器持有</span>
-        <strong id="ground-truth-title">{{ groundTruth.faultLabel }}</strong>
-        <small>{{ groundTruth.targetName }}（{{ groundTruth.targetId }}）</small>
+        <span>独立模型管理</span>
+        <strong>人工选择，不自动替换</strong>
       </div>
-      <dl>
-        <template v-for="feature in featureDefinitions" :key="feature.key">
-          <dt>{{ feature.label }}</dt>
-          <dd>{{ groundTruth.features[feature.key] }}</dd>
-        </template>
-      </dl>
-      <p>
-        已为当前拓扑生成 {{ groundTruth.observationCount }} 条观测，其中 {{ groundTruth.affectedObservationCount }} 个对象包含衰减传播信号。
-        发送给后端的请求不包含以上故障类型和真实位置。
-      </p>
+      <select v-model="chosenModelId" :disabled="busy">
+        <option v-for="item in models" :key="item.modelId" :value="item.modelId">
+          {{ item.modelId }} · {{ item.compatibility?.compatible ? '兼容' : '不兼容' }}
+        </option>
+      </select>
+      <button class="secondary-action" :disabled="busy || !chosenModelId" @click="handleSelectModel">
+        兼容检查并选择
+      </button>
+      <button class="secondary-action" :disabled="busy" @click="handleRollback">
+        人工回滚
+      </button>
     </section>
 
-    <p class="result-label">盲判结果与真值对比</p>
+    <button class="primary-action blind-start" :disabled="busy || !selectedModel" @click="handleCurrentDiagnosis">
+      {{ busy === 'current' ? '正在读取当前完整快照…' : '研判正式Redis当前快照' }}
+    </button>
+    <div class="topology-toolbar-actions">
+      <button
+        v-if="monitor.state !== 'RUNNING'"
+        class="secondary-action"
+        :disabled="busy || !selectedModel"
+        @click="handleMonitor('start')"
+      >
+        手动启动周期研判
+      </button>
+      <button
+        v-else
+        class="secondary-action"
+        :disabled="busy"
+        @click="handleMonitor('stop')"
+      >
+        停止周期研判
+      </button>
+      <small>{{ monitor.state }} · 已研判 {{ monitor.runCount || 0 }} 帧</small>
+    </div>
+
+    <section class="ground-truth-card">
+      <div>
+        <span>隔离影子会话</span>
+        <strong>pandapower物理/量测错误</strong>
+        <small>不会修改正式Redis活动快照或Neo4j拓扑</small>
+      </div>
+      <select v-model="shadowEventType" :disabled="busy">
+        <option v-for="event in shadowEvents" :key="event" :value="event">{{ event }}</option>
+      </select>
+      <input v-model.trim="shadowTargetId" placeholder="可选：指定设备businessId" :disabled="busy">
+      <button class="secondary-action" :disabled="busy || !selectedModel" @click="handleCreateShadow">
+        生成影子错误
+      </button>
+      <button class="secondary-action" :disabled="busy || !shadow" @click="handleShadowDiagnosis">
+        盲判
+      </button>
+      <button class="secondary-action" :disabled="busy || !diagnosis || !shadow" @click="handleReveal">
+        揭示答案
+      </button>
+      <small v-if="shadow">会话：{{ shadow.sessionId }} · {{ shadow.state }}</small>
+      <strong v-if="comparison">
+        {{ comparison.exactMatch ? '类型和位置均正确' : '研判与真值存在偏差' }}
+      </strong>
+    </section>
+
+    <p class="result-label">研判结果</p>
     <output class="result-box diagnosis-result" aria-live="polite">
-      <template v-if="diagnosisResult">
-        <div :class="['blind-comparison', { 'blind-comparison--success': comparison.exactMatch }]">
-          <strong>{{ comparison.exactMatch ? '研判完全正确' : '研判存在偏差' }}</strong>
-          <span>位置 {{ comparison.locationMatch ? '一致' : '不一致' }}</span>
-          <span>类型 {{ comparison.typeMatch ? '一致' : '不一致' }}</span>
-        </div>
-
+      <template v-if="diagnosis">
         <div class="diagnosis-target-result">
-          <span>模型定位结果</span>
-          <strong>{{ diagnosisResult.target.name }}</strong>
-          <small>{{ diagnosisResult.target.id }}</small>
+          <span>{{ diagnosis.status }}</span>
+          <strong>{{ diagnosis.predictedEventType || '数据不足' }}</strong>
+          <small>{{ diagnosis.targetBusinessId || '无故障定位' }}</small>
         </div>
-
         <div class="diagnosis-result-primary">
-          <span>模型研判类型</span>
-          <strong>{{ faultLabel(diagnosisResult.prediction.predictedFaultType) }}</strong>
-          <em>
-            异常分数 {{ percent(diagnosisResult.prediction.anomalyScore) }} ·
-            分类置信度 {{ percent(diagnosisResult.prediction.confidence) }}
-          </em>
+          <span>模型原始判断</span>
+          <strong>异常分数 {{ percent(diagnosis.anomalyScore) }}</strong>
+          <em>置信度 {{ percent(diagnosis.confidence) }} · 阈值 {{ percent(diagnosis.anomalyThreshold) }}</em>
         </div>
-
-        <div class="location-ranking">
-          <h3>定位候选 Top 5</h3>
-          <ol>
-            <li v-for="candidate in diagnosisResult.locationCandidates" :key="`${candidate.targetKind}-${candidate.targetId}`">
-              <span>{{ candidate.targetName }}</span>
-              <small>{{ faultLabel(candidate.predictedFaultType) }}</small>
-              <strong>{{ percent(candidate.anomalyScore) }}</strong>
-            </li>
-          </ol>
-        </div>
-
-        <div class="trace-columns">
-          <section>
-            <h3>向上游溯源</h3>
-            <p v-if="!diagnosisResult.trace.upstream.length">已到达电源侧边界</p>
-            <ol v-else>
-              <li v-for="step in diagnosisResult.trace.upstream" :key="`up-${step.nodeId}`">
-                <span>{{ step.nodeName }}</span>
-                <small>第 {{ step.depth }} 层 · {{ step.viaEdgeName || '线路上游端点' }}</small>
-              </li>
-            </ol>
-          </section>
-          <section>
-            <h3>向下游追踪</h3>
-            <p v-if="!diagnosisResult.trace.downstream.length">已到达负荷侧边界</p>
-            <ol v-else>
-              <li v-for="step in diagnosisResult.trace.downstream" :key="`down-${step.nodeId}`">
-                <span>{{ step.nodeName }}</span>
-                <small>第 {{ step.depth }} 层 · {{ step.viaEdgeName || '线路下游端点' }}</small>
-              </li>
-            </ol>
-          </section>
-        </div>
-
-        <small>
-          主模型：{{ diagnosisResult.prediction.modelType || 'GNN_GCN' }} ·
-          模型版本：{{ diagnosisResult.prediction.modelVersion }} ·
-          盲判观测数：{{ diagnosisResult.observationCount }}
-        </small>
+        <p>{{ diagnosis.summary }}</p>
+        <small>诊断ID：{{ diagnosis.diagnosisId }}</small>
+        <small>白箱档案：{{ diagnosis.artifactPath }}</small>
       </template>
-      <span v-else-if="isDiagnosing" class="diagnosis-empty">
-        真实情况已展示；Java/Python 正在对无标签观测执行盲判。
-      </span>
-      <span v-else class="diagnosis-empty">
-        点击按钮生成一次测试故障，并自动完成全拓扑定位、类型研判和双向溯源。
-      </span>
+      <span v-else class="diagnosis-empty">选择模型后，可以分别研判正式当前快照或隔离影子错误。</span>
     </output>
+
+    <section class="ground-truth-card">
+      <div>
+        <span>独立短路分析</span>
+        <strong>不写入连续潮流</strong>
+      </div>
+      <input v-model.trim="shortCircuitTargetId" placeholder="母线businessId" :disabled="busy">
+      <select v-model="shortCircuitType" :disabled="busy">
+        <option value="3ph">三相短路</option>
+        <option value="2ph">两相短路</option>
+        <option value="1ph">单相接地</option>
+      </select>
+      <input v-model.trim="shortCircuitPowerMva" type="number" min="0" placeholder="外部电网短路容量 MVA" :disabled="busy">
+      <input v-model.trim="shortCircuitRx" type="number" min="0" step="0.01" placeholder="外部电网 R/X" :disabled="busy">
+      <button class="secondary-action" :disabled="busy" @click="handleShortCircuit">执行短路分析</button>
+      <small v-if="shortCircuit">
+        {{ shortCircuit.analysisId }} · {{ shortCircuit.status }} · {{ shortCircuit.artifactPath }}
+      </small>
+    </section>
   </section>
 </template>

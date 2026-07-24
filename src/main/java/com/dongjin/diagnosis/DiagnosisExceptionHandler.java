@@ -8,7 +8,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-@RestControllerAdvice(assignableTypes = DiagnosisController.class)
+@RestControllerAdvice(assignableTypes = OnlineDiagnosisController.class)
 public class DiagnosisExceptionHandler {
 
     @ExceptionHandler(IllegalArgumentException.class)

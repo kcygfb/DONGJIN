@@ -111,6 +111,24 @@ class RedisSnapshotPublisher:
         finally:
             client.close()
 
+    def get(self, snapshot_id: str) -> dict[str, Any] | None:
+        if not snapshot_id or any(
+            character.isspace() for character in snapshot_id
+        ):
+            raise RedisSnapshotError("snapshotId格式无效")
+        client = self._client()
+        try:
+            serialized = client.get(
+                f"{SNAPSHOT_KEY_PREFIX}{snapshot_id}"
+            )
+            return json.loads(serialized) if serialized else None
+        except Exception as exc:
+            raise RedisSnapshotError(
+                f"Redis指定快照读取失败：{type(exc).__name__}: {exc}"
+            ) from exc
+        finally:
+            client.close()
+
     def write_simulation_status(self, status: dict[str, Any]) -> None:
         client = self._client()
         try:

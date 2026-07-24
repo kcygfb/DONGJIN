@@ -114,7 +114,7 @@ onMounted(() => {
   loadTopology()
   loadGridSource()
   refreshRuntime()
-  runtimePoller = window.setInterval(refreshRuntime, 2000)
+  runtimePoller = window.setInterval(refreshRuntime, 1000)
 })
 
 onBeforeUnmount(() => {

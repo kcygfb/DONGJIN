@@ -31,7 +31,7 @@ if (Test-MemuraiConnection) {
 
 $service = Get-Service -Name "Memurai" -ErrorAction SilentlyContinue
 if (-not $service) {
-    throw "Memurai service is not registered. See STARTUP.md for setup details."
+    throw "Memurai service is not registered. See 文档\操作指南\启动指南.md for setup details."
 }
 
 $isAdministrator = (

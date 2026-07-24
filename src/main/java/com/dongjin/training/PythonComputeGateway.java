@@ -132,20 +132,117 @@ public class PythonComputeGateway {
         return get("/offline/models/" + encode(modelId), Duration.ofSeconds(30));
     }
 
-    public JsonNode predictBatch(Object request) {
-        return post("/predict/batch", request, Duration.ofMinutes(2));
+    public JsonNode inferenceModels() {
+        return get("/inference/models", Duration.ofSeconds(30));
     }
 
-    public JsonNode activeModel() {
-        return get("/models/active", Duration.ofSeconds(10));
+    public JsonNode inferenceModel() {
+        return get("/inference/model", Duration.ofSeconds(10));
     }
 
-    public JsonNode reset() {
-        HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/reset"))
-                .timeout(Duration.ofSeconds(30))
-                .DELETE()
-                .build();
-        return send(request);
+    public JsonNode inferenceModelHistory() {
+        return get("/inference/model/history", Duration.ofSeconds(30));
+    }
+
+    public JsonNode checkInferenceModel(String modelId) {
+        return post(
+                "/inference/model/check/" + encode(modelId),
+                Map.of(),
+                Duration.ofSeconds(30)
+        );
+    }
+
+    public JsonNode selectInferenceModel(Object request) {
+        return post("/inference/model/select", request, Duration.ofSeconds(30));
+    }
+
+    public JsonNode reloadInferenceModel() {
+        return post("/inference/model/reload", Map.of(), Duration.ofSeconds(30));
+    }
+
+    public JsonNode rollbackInferenceModel() {
+        return post("/inference/model/rollback", Map.of(), Duration.ofSeconds(30));
+    }
+
+    public JsonNode diagnoseCurrentSnapshot() {
+        return post("/diagnosis/current", Map.of(), Duration.ofMinutes(2));
+    }
+
+    public JsonNode diagnoseSnapshot(String snapshotId) {
+        return post(
+                "/diagnosis/snapshots/" + encode(snapshotId),
+                Map.of(),
+                Duration.ofMinutes(2)
+        );
+    }
+
+    public JsonNode diagnosisResult(String diagnosisId) {
+        return get(
+                "/diagnosis/" + encode(diagnosisId),
+                Duration.ofSeconds(30)
+        );
+    }
+
+    public JsonNode startDiagnosisMonitor(Object request) {
+        return post("/diagnosis/monitor/start", request, Duration.ofSeconds(30));
+    }
+
+    public JsonNode diagnosisMonitorStatus() {
+        return get("/diagnosis/monitor/status", Duration.ofSeconds(10));
+    }
+
+    public JsonNode stopDiagnosisMonitor() {
+        return post("/diagnosis/monitor/stop", Map.of(), Duration.ofSeconds(30));
+    }
+
+    public JsonNode shadowSessions() {
+        return get("/shadow-sessions", Duration.ofSeconds(30));
+    }
+
+    public JsonNode createShadowSession(Object request) {
+        return post("/shadow-sessions", request, Duration.ofMinutes(5));
+    }
+
+    public JsonNode shadowSession(String sessionId) {
+        return get("/shadow-sessions/" + encode(sessionId), Duration.ofSeconds(30));
+    }
+
+    public JsonNode diagnoseShadowSession(String sessionId) {
+        return post(
+                "/shadow-sessions/" + encode(sessionId) + "/diagnose",
+                Map.of(),
+                Duration.ofMinutes(2)
+        );
+    }
+
+    public JsonNode revealShadowSession(String sessionId) {
+        return post(
+                "/shadow-sessions/" + encode(sessionId) + "/reveal",
+                Map.of(),
+                Duration.ofSeconds(30)
+        );
+    }
+
+    public JsonNode closeShadowSession(String sessionId) {
+        return delete(
+                "/shadow-sessions/" + encode(sessionId),
+                Duration.ofSeconds(30)
+        );
+    }
+
+    public JsonNode runShortCircuitAnalysis(Object request) {
+        return post(
+                "/short-circuit-analyses",
+                request,
+                Duration.ofMinutes(2)
+        );
+    }
+
+    public JsonNode shortCircuitAnalysis(String analysisId) {
+        return get(
+                "/short-circuit-analyses/" + encode(analysisId),
+                Duration.ofSeconds(30)
+        );
     }
 
     private JsonNode get(String path, Duration timeout) {
@@ -168,6 +265,14 @@ public class PythonComputeGateway {
                 .timeout(timeout)
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+        return send(request);
+    }
+
+    private JsonNode delete(String path, Duration timeout) {
+        HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + path))
+                .timeout(timeout)
+                .DELETE()
                 .build();
         return send(request);
     }

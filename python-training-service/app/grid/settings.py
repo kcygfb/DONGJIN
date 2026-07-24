@@ -20,6 +20,16 @@ class GridSettings(BaseModel):
     scenario_dir: Path = SERVICE_DIR / "artifacts" / "scenarios"
     dataset_dir: Path = SERVICE_DIR / "artifacts" / "datasets"
     offline_model_dir: Path = SERVICE_DIR / "artifacts" / "models"
+    diagnosis_dir: Path = SERVICE_DIR / "artifacts" / "diagnoses"
+    shadow_dir: Path = SERVICE_DIR / "artifacts" / "shadow-sessions"
+    short_circuit_dir: Path = SERVICE_DIR / "artifacts" / "short-circuit"
+    model_history_dir: Path = (
+        SERVICE_DIR / "artifacts" / "model-selection-history"
+    )
+    evaluation_dir: Path = SERVICE_DIR / "artifacts" / "model-evaluations"
+    inference_model_config: Path = (
+        SERVICE_DIR.parent / "config" / "inference-model.json"
+    )
     simulation_interval_seconds: float = Field(default=1.0, gt=0)
     interpolation_strategy: Literal["hold", "linear"] = "linear"
     profile_start_time: datetime = datetime(2016, 1, 1, tzinfo=UTC)
@@ -73,6 +83,50 @@ class GridSettings(BaseModel):
                     str(SERVICE_DIR / "artifacts" / "models"),
                 )
             ),
+            diagnosis_dir=Path(
+                os.getenv(
+                    "DONGJIN_DIAGNOSIS_DIR",
+                    str(SERVICE_DIR / "artifacts" / "diagnoses"),
+                )
+            ),
+            shadow_dir=Path(
+                os.getenv(
+                    "DONGJIN_SHADOW_DIR",
+                    str(SERVICE_DIR / "artifacts" / "shadow-sessions"),
+                )
+            ),
+            short_circuit_dir=Path(
+                os.getenv(
+                    "DONGJIN_SHORT_CIRCUIT_DIR",
+                    str(SERVICE_DIR / "artifacts" / "short-circuit"),
+                )
+            ),
+            model_history_dir=Path(
+                os.getenv(
+                    "DONGJIN_MODEL_HISTORY_DIR",
+                    str(
+                        SERVICE_DIR
+                        / "artifacts"
+                        / "model-selection-history"
+                    ),
+                )
+            ),
+            evaluation_dir=Path(
+                os.getenv(
+                    "DONGJIN_MODEL_EVALUATION_DIR",
+                    str(SERVICE_DIR / "artifacts" / "model-evaluations"),
+                )
+            ),
+            inference_model_config=Path(
+                os.getenv(
+                    "DONGJIN_INFERENCE_MODEL_CONFIG",
+                    str(
+                        SERVICE_DIR.parent
+                        / "config"
+                        / "inference-model.json"
+                    ),
+                )
+            ),
             simulation_interval_seconds=os.getenv(
                 "DONGJIN_SIMULATION_INTERVAL_SECONDS", "1.0"
             ),
@@ -119,6 +173,30 @@ class GridSettings(BaseModel):
     @property
     def resolved_offline_model_dir(self) -> Path:
         return self.offline_model_dir.expanduser().resolve()
+
+    @property
+    def resolved_diagnosis_dir(self) -> Path:
+        return self.diagnosis_dir.expanduser().resolve()
+
+    @property
+    def resolved_shadow_dir(self) -> Path:
+        return self.shadow_dir.expanduser().resolve()
+
+    @property
+    def resolved_short_circuit_dir(self) -> Path:
+        return self.short_circuit_dir.expanduser().resolve()
+
+    @property
+    def resolved_model_history_dir(self) -> Path:
+        return self.model_history_dir.expanduser().resolve()
+
+    @property
+    def resolved_evaluation_dir(self) -> Path:
+        return self.evaluation_dir.expanduser().resolve()
+
+    @property
+    def resolved_inference_model_config(self) -> Path:
+        return self.inference_model_config.expanduser().resolve()
 
 
 @lru_cache

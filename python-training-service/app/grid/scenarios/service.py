@@ -61,6 +61,10 @@ EVENT_TARGET_TYPES = {
     EventType.MEASUREMENT_BIAS: "bus",
     EventType.MEASUREMENT_DROPOUT: "line",
     EventType.MEASUREMENT_FROZEN: "bus",
+    EventType.MEASUREMENT_DRIFT: "bus",
+    EventType.MEASUREMENT_DELAY: "bus",
+    EventType.MEASUREMENT_QUANTIZATION: "bus",
+    EventType.TAP_POSITION_ANOMALY: "trafo",
 }
 
 
@@ -269,6 +273,7 @@ def _generate_one(
     driver: SimBenchProfileDriver,
     grid_manifest: dict[str, Any],
     noise_relative_std: float,
+    requested_target_business_id: str | None = None,
 ) -> dict[str, Any]:
     provenance = driver.apply(simulation_time, "linear")
     baseline_net = copy.deepcopy(driver.net)
@@ -297,6 +302,7 @@ def _generate_one(
         event_type,
         target_type,
         rng,
+        requested_target_business_id,
     )
     converged, calculation_error = _run_power_flow(scenario_net)
     event_truth = _build_truth(
@@ -384,6 +390,7 @@ def _select_and_apply_event(
     event_type: EventType,
     target_type: str | None,
     rng: np.random.Generator,
+    requested_target_business_id: str | None = None,
 ) -> tuple[str | None, dict[str, Any]]:
     if event_type == EventType.NORMAL:
         return None, {}
@@ -413,7 +420,23 @@ def _select_and_apply_event(
         raise ScenarioGenerationError(
             f"没有在运目标：{target_type}"
         )
-    index = candidates[int(rng.integers(0, len(candidates)))]
+    if requested_target_business_id:
+        prefix = f"{grid_id}:{target_type}:"
+        if not requested_target_business_id.startswith(prefix):
+            raise ScenarioGenerationError(
+                "指定目标与事件要求的设备类型不匹配"
+            )
+        source_text = requested_target_business_id.removeprefix(prefix)
+        matching = [
+            index for index in candidates if str(index) == source_text
+        ]
+        if not matching:
+            raise ScenarioGenerationError(
+                f"指定目标不存在或当前不可用：{requested_target_business_id}"
+            )
+        index = matching[0]
+    else:
+        index = candidates[int(rng.integers(0, len(candidates)))]
     target = _business_id(grid_id, target_type, index)
     parameters: dict[str, Any] = {}
     if event_type in {
@@ -455,6 +478,29 @@ def _select_and_apply_event(
         parameters = {"dropAllDynamicFields": True}
     elif event_type == EventType.MEASUREMENT_FROZEN:
         parameters = {"frozenAt": "BASELINE"}
+    elif event_type == EventType.MEASUREMENT_DRIFT:
+        parameters = {
+            "relativeDrift": round(float(rng.uniform(0.02, 0.08)), 6)
+        }
+    elif event_type == EventType.MEASUREMENT_DELAY:
+        parameters = {"delayedTo": "BASELINE"}
+    elif event_type == EventType.MEASUREMENT_QUANTIZATION:
+        parameters = {"decimalPlaces": 2}
+    elif event_type == EventType.TAP_POSITION_ANOMALY:
+        previous = table.at[index, "tap_pos"]
+        minimum = table.at[index, "tap_min"]
+        maximum = table.at[index, "tap_max"]
+        if previous < maximum:
+            current = previous + 1
+        elif previous > minimum:
+            current = previous - 1
+        else:
+            raise ScenarioGenerationError("指定变压器没有可用分接头档位")
+        table.at[index, "tap_pos"] = current
+        parameters = {
+            "previousTapPosition": float(previous),
+            "newTapPosition": float(current),
+        }
     return target, parameters
 
 
@@ -730,6 +776,44 @@ def _build_measurement(
                         "baselineFrameId": baseline["frameId"]
                     }
                     quality = QualityCode.FROZEN
+                elif event_type == EventType.MEASUREMENT_DRIFT and (
+                    isinstance(source_value, (int, float))
+                    and not isinstance(source_value, bool)
+                ):
+                    relative_drift = float(
+                        definition.event.parameters["relativeDrift"]
+                    )
+                    drift = max(abs(float(source_value)), 1e-3) * relative_drift
+                    output_value = float(output_value) + drift
+                    operation = "DRIFT_AFTER_NOISE"
+                    parameters = {
+                        **parameters,
+                        "relativeDrift": relative_drift,
+                        "drift": drift,
+                    }
+                    quality = QualityCode.SUSPECT
+                elif event_type == EventType.MEASUREMENT_DELAY:
+                    output_value = (
+                        baseline_objects.get(business_id, {})
+                        .get("values", {})
+                        .get(field)
+                    )
+                    operation = "DELAYED_TO_BASELINE"
+                    parameters = {
+                        "baselineFrameId": baseline["frameId"]
+                    }
+                    quality = QualityCode.DELAYED
+                elif event_type == EventType.MEASUREMENT_QUANTIZATION and (
+                    isinstance(source_value, (int, float))
+                    and not isinstance(source_value, bool)
+                ):
+                    decimal_places = int(
+                        definition.event.parameters["decimalPlaces"]
+                    )
+                    output_value = round(float(output_value), decimal_places)
+                    operation = "QUANTIZATION"
+                    parameters = {"decimalPlaces": decimal_places}
+                    quality = QualityCode.SUSPECT
             values[field] = output_value
             if operation != "IDENTITY":
                 audit.append(
@@ -793,12 +877,16 @@ def _build_labels(
             EventType.SWITCH_MISOPERATION,
             EventType.LOAD_SURGE,
             EventType.GENERATION_DROP,
+            EventType.TAP_POSITION_ANOMALY,
         },
         "isMeasurementEvent": event_type
         in {
             EventType.MEASUREMENT_BIAS,
             EventType.MEASUREMENT_DROPOUT,
             EventType.MEASUREMENT_FROZEN,
+            EventType.MEASUREMENT_DRIFT,
+            EventType.MEASUREMENT_DELAY,
+            EventType.MEASUREMENT_QUANTIZATION,
         },
         "impactLabels": {
             "UNDERVOLTAGE": bool(

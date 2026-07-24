@@ -27,9 +27,21 @@ from app.grid.training.trainer import (
     list_offline_models,
     train_offline_model,
 )
+from app.grid.online.evaluation import (
+    ModelEvaluationError,
+    evaluate_offline_model,
+)
+from pydantic import BaseModel, ConfigDict, Field
 
 
 router = APIRouter(prefix="/offline", tags=["offline-training"])
+
+
+class ModelEvaluationRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    model_id: str = Field(alias="modelId", min_length=1)
+    dataset_id: str = Field(alias="datasetId", min_length=1)
+    split: str = Field(default="test", pattern="^(train|validation|test)$")
 
 
 @router.post("/scenario-batches/generate")
@@ -119,3 +131,21 @@ def model(model_id: str) -> dict[str, Any]:
         return get_offline_model(model_id)
     except OfflineTrainingError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/evaluation/run")
+def run_evaluation(
+    request: ModelEvaluationRequest,
+) -> dict[str, Any]:
+    try:
+        return evaluate_offline_model(
+            request.model_id,
+            request.dataset_id,
+            split=request.split,
+        )
+    except (
+        ModelEvaluationError,
+        OfflineTrainingError,
+        DatasetBuildError,
+    ) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

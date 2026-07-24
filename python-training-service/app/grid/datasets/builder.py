@@ -542,6 +542,8 @@ def _features(
         )
     result["missingFieldCount"] = float(missing_count)
     quality = str(measurement.get("qualityCode", "MISSING"))
+    if quality in {"DELAYED", "SUBSTITUTED"}:
+        quality = "SUSPECT"
     for code in QUALITY_CODES:
         result[f"quality.{code}"] = float(quality == code)
     return result

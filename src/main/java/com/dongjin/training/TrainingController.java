@@ -1,7 +1,6 @@
 package com.dongjin.training;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import java.time.Instant;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -76,14 +75,4 @@ public class TrainingController {
         return trainingGateway.offlineModel(modelId);
     }
 
-    @GetMapping("/models/active")
-    public JsonNode activeModel() {
-        return trainingGateway.activeModel();
-    }
-
-    @PostMapping("/reset")
-    public TrainingResetResult resetTraining() {
-        JsonNode pythonResult = trainingGateway.reset();
-        return new TrainingResetResult("RESET", Instant.now(), pythonResult);
-    }
 }
